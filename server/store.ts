@@ -213,7 +213,7 @@ export class AppPulseStore {
     })).sort((a, b) => b.count - a.count);
 
     // Marketplace breakdown
-    const mktMap: Record<Marketplace, number> = { googleplay: 0, steam: 0, microsoft: 0 };
+    const mktMap: Record<Marketplace, number> = { googleplay: 0, steam: 0, microsoft: 0, apple: 0 };
     for (const app of this.data.apps) {
       mktMap[app.marketplace] = (mktMap[app.marketplace] || 0) + 1;
     }

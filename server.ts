@@ -8,6 +8,7 @@ import { connectorRegistry } from './server/connectors/index.ts';
 import { analyzeComplaintsWithAI, generateOpportunitiesWithAI, draftOutreachEmailWithAI, forecastFutureWeaknessesWithAI } from './server/ai.ts';
 import { jsonToCsv, parseCsv } from './src/lib/csv.ts';
 import { Application, Contact, Opportunity } from './src/types.ts';
+import { generateResearchReport } from './server/reports.ts';
 
 dotenv.config();
 
@@ -37,6 +38,24 @@ app.get('/api/stats', (req, res) => {
     res.json(stats);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Research report export. The report is generated from the current stored scope only.
+app.get('/api/reports/research.pdf', async (req, res) => {
+  try {
+    const requestedAppIds = typeof req.query.appIds === 'string' ? req.query.appIds.split(',').filter(Boolean) : [];
+    const apps = store.getApps().filter((item) => requestedAppIds.length === 0 || requestedAppIds.includes(item.id));
+    const appIds = new Set(apps.map((item) => item.id));
+    const reviews = store.getReviews({ limit: 5000 }).reviews.filter((item) => appIds.size === 0 || appIds.has(item.appId));
+    const themes = store.getThemes();
+    const opportunities = store.getOpportunities();
+    const report = await generateResearchReport({ title: 'AppPulse Intelligence Research Report', apps, reviews, themes, opportunities });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="apppulse-research-report.pdf"');
+    res.send(report);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Unable to generate research report' });
   }
 });
 

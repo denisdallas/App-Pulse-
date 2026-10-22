@@ -32,7 +32,7 @@ export interface MarketplaceConnector {
   searchApps(options: SearchOptions): Promise<Application[]>;
   fetchReviews(appId: string, options?: ReviewFetchOptions): Promise<FetchReviewsResult>;
   getStatus(): Promise<{
-    status: 'operational' | 'rate_limited' | 'degraded' | 'unsupported' | 'blocked';
+    status: 'operational' | 'rate_limited' | 'degraded' | 'unsupported' | 'blocked' | 'partially_supported';
     latencyMs: number;
     message: string;
     reviewCoverage: string;

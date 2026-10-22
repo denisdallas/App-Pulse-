@@ -1,4 +1,4 @@
-export type Marketplace = 'googleplay' | 'steam' | 'microsoft';
+export type Marketplace = 'googleplay' | 'steam' | 'microsoft' | 'apple';
 
 export type AppCategory = 
   | 'Finance'
