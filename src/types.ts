@@ -283,4 +283,6 @@ export interface SystemStats {
   suppressionCount: number;
   complaintBreakdown: { category: string; count: number }[];
   marketplacesBreakdown: { marketplace: Marketplace; count: number }[];
+  liveReviewCount?: number;
+  demonstrationReviewCount?: number;
 }

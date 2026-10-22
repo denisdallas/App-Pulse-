@@ -66,6 +66,10 @@ export class AppPulseStore {
       if (fs.existsSync(DATA_FILE)) {
         const raw = fs.readFileSync(DATA_FILE, 'utf-8');
         this.data = JSON.parse(raw);
+        this.data.reviews = (this.data.reviews || []).map((review) => ({
+          ...review,
+          provenance: review.provenance || 'seed',
+        }));
         if (!this.data.forecasts || this.data.forecasts.length === 0) {
           this.data.forecasts = [...SEED_FORECASTS];
         }
@@ -234,6 +238,8 @@ export class AppPulseStore {
       suppressionCount: this.data.suppression.length,
       complaintBreakdown,
       marketplacesBreakdown,
+      liveReviewCount: this.data.reviews.filter((review) => review.provenance === 'live_marketplace').length,
+      demonstrationReviewCount: this.data.reviews.filter((review) => review.provenance !== 'live_marketplace').length,
     };
   }
 
@@ -580,7 +586,7 @@ export class AppPulseStore {
     return campaign;
   }
 
-  async sendCampaign(id: string): Promise<{ success: boolean; status: 'not_configured' | 'sent'; sent: number; blocked: number; reasons: string[] }> {
+  async sendCampaign(id: string): Promise<{ success: boolean; status: 'not_configured' | 'failed'; sent: number; blocked: number; reasons: string[] }> {
     const camp = this.data.campaigns.find((c) => c.id === id);
     if (!camp) throw new Error(`Campaign ${id} not found`);
 
@@ -596,8 +602,16 @@ export class AppPulseStore {
       return { success: false, status: 'not_configured', sent: 0, blocked: blocked.length, reasons: ['Email provider is not configured; no messages were sent.', ...blocked.map((b) => `${b.recipient.email}: ${b.reason}`)] };
     }
 
-    // A real provider adapter is intentionally not part of Phase 1. Never claim delivery.
-    throw new Error('Email provider configuration is present, but no delivery adapter is enabled.');
+    // Credentials alone do not prove a provider can deliver. Keep recipients unchanged until a real adapter and provider event are available.
+    camp.status = 'approved';
+    this.save();
+    return {
+      success: false,
+      status: 'failed',
+      sent: 0,
+      blocked: blocked.length,
+      reasons: ['Email credentials are present, but no verified delivery adapter is enabled; no messages were sent.', ...blocked.map((b) => `${b.recipient.email}: ${b.reason}`)],
+    };
   }
 
   // Research Projects

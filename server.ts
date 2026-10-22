@@ -143,7 +143,7 @@ app.post('/api/apps/collect', async (req, res) => {
     if (!appId) return res.status(400).json({ error: 'appId is required' });
 
     const job = await store.startCollectionJob(appId, { negativeOnly });
-    res.json({ job, message: 'Collection job started successfully' });
+    res.json({ job, message: 'Collection job started. Poll /api/jobs for the persisted result.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -580,6 +580,9 @@ app.get('/api/export', (req, res) => {
         { key: 'helpfulVotes', header: 'Helpful Votes' },
         { key: 'appVersion', header: 'App Version' },
         { key: 'collectedAt', header: 'Collected At' },
+        { key: 'provenance', header: 'Provenance' },
+        { key: 'sourceReviewId', header: 'Source Review ID' },
+        { key: 'reviewUrl', header: 'Source URL' },
       ]);
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', 'attachment; filename="apppulse_reviews.csv"');

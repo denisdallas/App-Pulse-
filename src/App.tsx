@@ -415,7 +415,6 @@ export default function App() {
         <Header
           currentTab={currentTab}
           onRefresh={loadAllData}
-          onExport={(type) => handleExport(type, 'csv')}
           onRunAI={currentTab === 'analytics' || currentTab === 'dashboard' ? handleRunAIAnalysis : undefined}
           isAnalyzing={isAnalyzing}
           onToggleMobileMenu={() => setMobileMenuOpen(!mobileMenuOpen)}
