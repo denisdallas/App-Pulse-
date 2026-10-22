@@ -1,5 +1,5 @@
 import { Application, Review } from '../../src/types.ts';
-import { MarketplaceConnector, SearchOptions, ReviewFetchOptions, FetchReviewsResult } from './types.ts';
+import { MarketplaceConnector, SearchOptions, ReviewFetchOptions, FetchReviewsResult, UnsupportedConnectorError } from './types.ts';
 
 /**
  * Microsoft Store Connector
@@ -10,22 +10,18 @@ export class MicrosoftStoreConnector implements MarketplaceConnector {
   displayName = 'Microsoft Store';
 
   async searchApps(options: SearchOptions): Promise<Application[]> {
-    return [];
+    throw new UnsupportedConnectorError('Microsoft Store app search is not configured; no public connector is enabled.');
   }
 
   async fetchReviews(appId: string, options: ReviewFetchOptions = {}): Promise<FetchReviewsResult> {
-    return {
-      reviews: [],
-      totalAvailable: 0,
-      hasMore: false,
-    };
+    throw new UnsupportedConnectorError('Microsoft Store review collection is blocked until a supported connector is configured.');
   }
 
   async getStatus() {
     return {
-      status: 'operational' as const,
-      latencyMs: 110,
-      message: 'Windows App Store catalog connector ready. Uses official MS Store Display Catalog API.',
+      status: 'unsupported' as const,
+      latencyMs: 0,
+      message: 'Unsupported: no configured Microsoft Store review connector.',
       reviewCoverage: 'Windows 10/11 desktop application and enterprise tools reviews',
     };
   }

@@ -1,11 +1,10 @@
 import React from 'react';
 import { ViewTab } from './Sidebar.tsx';
-import { Download, Sparkles, RefreshCw } from 'lucide-react';
+import { Sparkles, RefreshCw } from 'lucide-react';
 
 interface HeaderProps {
   currentTab: ViewTab;
   onRefresh: () => void;
-  onExport: (type: 'reviews' | 'opportunities' | 'contacts') => void;
   onRunAI?: () => void;
   isAnalyzing?: boolean;
   onToggleMobileMenu?: () => void;
@@ -23,7 +22,7 @@ const tabTitles: Record<ViewTab, { title: string; subtitle: string }> = {
   settings: { title: 'System & Connector Settings', subtitle: 'Marketplace connectors, rate-limits, Gemini model status, and audit logs' },
 };
 
-export const Header: React.FC<HeaderProps> = ({ currentTab, onRefresh, onExport, onRunAI, isAnalyzing, onToggleMobileMenu }) => {
+export const Header: React.FC<HeaderProps> = ({ currentTab, onRefresh, onRunAI, isAnalyzing, onToggleMobileMenu }) => {
   const current = tabTitles[currentTab];
 
   return (
@@ -81,24 +80,6 @@ export const Header: React.FC<HeaderProps> = ({ currentTab, onRefresh, onExport,
           </button>
         )}
 
-        <a
-          href="/api/audit-report/download"
-          download="AppPulse_Implementation_Audit_Report.pdf"
-          className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-medium text-amber-200 bg-amber-950/50 border border-amber-800/60 hover:bg-amber-900/60 rounded-lg transition-colors"
-          title="Download Implementation Audit Report (PDF)"
-        >
-          <Download className="w-3.5 h-3.5 text-amber-400" />
-          <span className="hidden sm:inline">Audit Report (PDF)</span>
-        </a>
-
-        <button
-          onClick={() => onExport(currentTab === 'opportunities' ? 'opportunities' : currentTab === 'outreach' ? 'contacts' : 'reviews')}
-          className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors"
-          title="Export CSV"
-        >
-          <Download className="w-3.5 h-3.5 text-slate-400" />
-          <span className="hidden sm:inline">Export CSV</span>
-        </button>
       </div>
     </header>
   );

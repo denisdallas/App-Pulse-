@@ -1,5 +1,5 @@
 import { Application, Review } from '../../src/types.ts';
-import { MarketplaceConnector, SearchOptions, ReviewFetchOptions, FetchReviewsResult } from './types.ts';
+import { MarketplaceConnector, SearchOptions, ReviewFetchOptions, FetchReviewsResult, UnsupportedConnectorError } from './types.ts';
 
 /**
  * Google Play Store Connector
@@ -11,26 +11,18 @@ export class GooglePlayConnector implements MarketplaceConnector {
   displayName = 'Google Play Store';
 
   async searchApps(options: SearchOptions): Promise<Application[]> {
-    // In production, uses public store RSS/catalog endpoints or official Enterprise API when credentials are provided.
-    // If external network is restricted, matches against indexed catalog.
-    return [];
+    throw new UnsupportedConnectorError('Google Play app search is not configured; no public connector is enabled.');
   }
 
   async fetchReviews(appId: string, options: ReviewFetchOptions = {}): Promise<FetchReviewsResult> {
-    // When credentials or public web feed is accessible, ingests reviews.
-    // Otherwise returns empty result with transparent status message.
-    return {
-      reviews: [],
-      totalAvailable: 0,
-      hasMore: false,
-    };
+    throw new UnsupportedConnectorError('Google Play review collection is blocked until a supported connector is configured.');
   }
 
   async getStatus() {
     return {
-      status: 'operational' as const,
-      latencyMs: 84,
-      message: 'Public listing metadata active; direct reviews ingestion throttled by regional store rate-limits.',
+      status: 'unsupported' as const,
+      latencyMs: 0,
+      message: 'Unsupported: no configured Google Play review connector.',
       reviewCoverage: 'Public 1-star & 2-star feedback from verified Android app releases',
     };
   }

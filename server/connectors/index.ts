@@ -2,6 +2,7 @@ import { MarketplaceConnector } from './types.ts';
 import { SteamConnector } from './steam.ts';
 import { GooglePlayConnector } from './googleplay.ts';
 import { MicrosoftStoreConnector } from './microsoft.ts';
+import { AppleAppStoreConnector } from './apple.ts';
 import { Marketplace } from '../../src/types.ts';
 
 export class ConnectorRegistry {
@@ -11,6 +12,7 @@ export class ConnectorRegistry {
     this.register(new SteamConnector());
     this.register(new GooglePlayConnector());
     this.register(new MicrosoftStoreConnector());
+    this.register(new AppleAppStoreConnector());
   }
 
   register(connector: MarketplaceConnector) {

@@ -533,6 +533,7 @@ export function getSeedReviews(): Review[] {
 
   return rawList.map((item) => ({
     ...item,
+    provenance: 'seed' as const,
     fingerprint: generateReviewFingerprint(item.appId, item.text, item.starRating, item.reviewDate),
   }));
 }

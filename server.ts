@@ -8,6 +8,7 @@ import { connectorRegistry } from './server/connectors/index.ts';
 import { analyzeComplaintsWithAI, generateOpportunitiesWithAI, draftOutreachEmailWithAI, forecastFutureWeaknessesWithAI } from './server/ai.ts';
 import { jsonToCsv, parseCsv } from './src/lib/csv.ts';
 import { Application, Contact, Opportunity } from './src/types.ts';
+import { generateResearchReport } from './server/reports.ts';
 
 dotenv.config();
 
@@ -37,6 +38,24 @@ app.get('/api/stats', (req, res) => {
     res.json(stats);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Research report export. The report is generated from the current stored scope only.
+app.get('/api/reports/research.pdf', async (req, res) => {
+  try {
+    const requestedAppIds = typeof req.query.appIds === 'string' ? req.query.appIds.split(',').filter(Boolean) : [];
+    const apps = store.getApps().filter((item) => requestedAppIds.length === 0 || requestedAppIds.includes(item.id));
+    const appIds = new Set(apps.map((item) => item.id));
+    const reviews = store.getReviews({ limit: 5000 }).reviews.filter((item) => appIds.size === 0 || appIds.has(item.appId));
+    const themes = store.getThemes();
+    const opportunities = store.getOpportunities();
+    const report = await generateResearchReport({ title: 'AppPulse Intelligence Research Report', apps, reviews, themes, opportunities });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="apppulse-research-report.pdf"');
+    res.send(report);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Unable to generate research report' });
   }
 });
 
@@ -124,7 +143,7 @@ app.post('/api/apps/collect', async (req, res) => {
     if (!appId) return res.status(400).json({ error: 'appId is required' });
 
     const job = await store.startCollectionJob(appId, { negativeOnly });
-    res.json({ job, message: 'Collection job started successfully' });
+    res.json({ job, message: 'Collection job started. Poll /api/jobs for the persisted result.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -529,8 +548,8 @@ app.get('/api/settings', async (req, res) => {
       aiModel: 'gemini-3.8-flash',
       aiStatus: hasAiKey ? 'active' : 'fallback_clustering',
       connectors: statuses,
-      emailProvider: 'Transactional SMTP / Sandboxed Test Delivery',
-      emailDeliveryReady: true,
+      emailProvider: process.env.SMTP_HOST ? 'SMTP configured; delivery adapter unavailable in Phase 1' : 'Not configured',
+      emailDeliveryReady: false,
       dataRetentionDays: 90,
       suppressionCount: store.getSuppressionList().length,
     });
@@ -561,6 +580,9 @@ app.get('/api/export', (req, res) => {
         { key: 'helpfulVotes', header: 'Helpful Votes' },
         { key: 'appVersion', header: 'App Version' },
         { key: 'collectedAt', header: 'Collected At' },
+        { key: 'provenance', header: 'Provenance' },
+        { key: 'sourceReviewId', header: 'Source Review ID' },
+        { key: 'reviewUrl', header: 'Source URL' },
       ]);
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', 'attachment; filename="apppulse_reviews.csv"');
