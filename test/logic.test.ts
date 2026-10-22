@@ -6,6 +6,18 @@ import { isEmailSuppressed, filterSuppressedRecipients } from '../src/lib/suppre
 import { jsonToCsv, parseCsv } from '../src/lib/csv.ts';
 import { compareVersions, isVersionInRange, calculateFutureOpportunityScore } from '../src/lib/forecast.ts';
 import { Review, SuppressionRecord } from '../src/types.ts';
+import { GooglePlayConnector } from '../server/connectors/googleplay.ts';
+import { UnsupportedConnectorError } from '../server/connectors/types.ts';
+
+test('unsupported marketplace connectors report an explicit unsupported error', async () => {
+  const connector = new GooglePlayConnector();
+  await assert.rejects(() => connector.fetchReviews('demo-app'), (error: unknown) => {
+    assert.ok(error instanceof UnsupportedConnectorError);
+    assert.match((error as Error).message, /blocked|configured/i);
+    return true;
+  });
+  assert.equal((await connector.getStatus()).status, 'unsupported');
+});
 
 test('calculateOpportunityScore correctly calculates priority and breakdown', () => {
   const resultHigh = calculateOpportunityScore({

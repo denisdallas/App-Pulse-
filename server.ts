@@ -529,8 +529,8 @@ app.get('/api/settings', async (req, res) => {
       aiModel: 'gemini-3.8-flash',
       aiStatus: hasAiKey ? 'active' : 'fallback_clustering',
       connectors: statuses,
-      emailProvider: 'Transactional SMTP / Sandboxed Test Delivery',
-      emailDeliveryReady: true,
+      emailProvider: process.env.SMTP_HOST ? 'SMTP configured; delivery adapter unavailable in Phase 1' : 'Not configured',
+      emailDeliveryReady: false,
       dataRetentionDays: 90,
       suppressionCount: store.getSuppressionList().length,
     });

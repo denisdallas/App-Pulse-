@@ -23,6 +23,7 @@ import { calculateOpportunityScore } from '../src/lib/scoring.ts';
 import { isEmailSuppressed, filterSuppressedRecipients } from '../src/lib/suppression.ts';
 import { isVersionInRange } from '../src/lib/forecast.ts';
 import { connectorRegistry } from './connectors/index.ts';
+import { UnsupportedConnectorError } from './connectors/types.ts';
 
 interface StoreData {
   apps: Application[];
@@ -374,33 +375,31 @@ export class AppPulseStore {
     setTimeout(async () => {
       try {
         const connector = connectorRegistry.get(app.marketplace);
-        let incoming: Omit<Review, 'fingerprint'>[] = [];
-
-        if (connector) {
-          const result = await connector.fetchReviews(appId, {
-            negativeOnly: options?.negativeOnly ?? true,
-            limit: 30,
-          });
-          incoming = result.reviews;
-        }
-
+        if (!connector) throw new UnsupportedConnectorError(`Marketplace ${app.marketplace} is not supported.`);
+        const result = await connector.fetchReviews(appId, {
+          negativeOnly: options?.negativeOnly ?? true,
+          limit: 30,
+        });
+        const incoming = result.reviews.map((review) => ({ ...review, provenance: 'live_marketplace' as const }));
         job.progress = 65;
         this.save();
 
         const { uniqueReviews, duplicatesCount } = deduplicateReviews(incoming, this.data.reviews);
         this.data.reviews.unshift(...uniqueReviews);
-
         job.collectedCount = incoming.length;
         job.deduplicatedCount = duplicatesCount;
+        job.outcome = incoming.length === 0 ? 'empty' : 'collected';
         job.progress = 100;
         job.status = 'completed';
         job.completedAt = new Date().toISOString();
-        
-        this.logAudit('COLLECT_REVIEWS', 'CollectionJob', jobId, `Collected ${incoming.length} reviews for ${app.name} (${duplicatesCount} duplicates discarded)`);
+        this.logAudit('COLLECT_REVIEWS', 'CollectionJob', jobId, `Collected ${incoming.length} live reviews for ${app.name} (${duplicatesCount} duplicates discarded)`);
         this.save();
       } catch (err: any) {
         job.status = 'failed';
+        job.outcome = err instanceof UnsupportedConnectorError ? 'unsupported' : 'failed';
         job.error = err.message || 'Collection pipeline error';
+        job.progress = 100;
+        job.completedAt = new Date().toISOString();
         this.save();
       }
     }, 800);
@@ -581,41 +580,24 @@ export class AppPulseStore {
     return campaign;
   }
 
-  async sendCampaign(id: string): Promise<{ success: boolean; sent: number; blocked: number; reasons: string[] }> {
+  async sendCampaign(id: string): Promise<{ success: boolean; status: 'not_configured' | 'sent'; sent: number; blocked: number; reasons: string[] }> {
     const camp = this.data.campaigns.find((c) => c.id === id);
     if (!camp) throw new Error(`Campaign ${id} not found`);
 
     const suppressionList = this.getSuppressionList();
     const { allowed, blocked } = filterSuppressedRecipients(camp.recipients, suppressionList);
 
-    // Update recipient statuses
-    for (const item of allowed) {
-      item.status = 'sent';
-      item.sentAt = new Date().toISOString();
+    const emailConfigured = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+    if (!emailConfigured) {
+      for (const b of blocked) b.recipient.status = 'suppressed';
+      camp.stats.suppressed = (camp.stats.suppressed || 0) + blocked.length;
+      camp.status = 'approved';
+      this.save();
+      return { success: false, status: 'not_configured', sent: 0, blocked: blocked.length, reasons: ['Email provider is not configured; no messages were sent.', ...blocked.map((b) => `${b.recipient.email}: ${b.reason}`)] };
     }
-    for (const b of blocked) {
-      b.recipient.status = 'suppressed';
-    }
 
-    camp.stats.sent = (camp.stats.sent || 0) + allowed.length;
-    camp.stats.delivered = (camp.stats.delivered || 0) + allowed.length;
-    camp.stats.suppressed = (camp.stats.suppressed || 0) + blocked.length;
-    camp.status = 'completed';
-
-    this.logAudit(
-      'SEND_CAMPAIGN',
-      'Campaign',
-      id,
-      `Delivered outreach to ${allowed.length} verified contacts; blocked ${blocked.length} suppressed/opted-out recipients.`
-    );
-    this.save();
-
-    return {
-      success: true,
-      sent: allowed.length,
-      blocked: blocked.length,
-      reasons: blocked.map((b) => `${b.recipient.email}: ${b.reason}`),
-    };
+    // A real provider adapter is intentionally not part of Phase 1. Never claim delivery.
+    throw new Error('Email provider configuration is present, but no delivery adapter is enabled.');
   }
 
   // Research Projects

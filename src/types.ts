@@ -98,8 +98,12 @@ export interface ReviewClassification {
   isPricingIssue: boolean;
 }
 
+export type DataProvenance = 'seed' | 'live_marketplace' | 'ai_generated' | 'calculated';
+
 export interface Review {
   id: string; // source review identifier or composite
+  provenance?: DataProvenance;
+  sourceReviewId?: string;
   appId: string;
   appName: string;
   marketplace: Marketplace;
@@ -173,6 +177,7 @@ export interface CollectionJob {
   appName: string;
   marketplace: Marketplace;
   status: 'queued' | 'running' | 'completed' | 'failed';
+  outcome?: 'collected' | 'empty' | 'unsupported' | 'failed';
   progress: number; // 0 - 100
   collectedCount: number;
   deduplicatedCount: number;
@@ -207,8 +212,10 @@ export interface CampaignRecipient {
   appName: string;
   personalizedSubject: string;
   personalizedBody: string;
-  status: 'pending' | 'approved' | 'sent' | 'bounced' | 'unsubscribed' | 'suppressed';
+  status: 'pending' | 'approved' | 'queued' | 'sent' | 'delivered' | 'failed' | 'bounced' | 'unsubscribed' | 'suppressed';
   sentAt?: string;
+  deliveredAt?: string;
+  failureReason?: string;
 }
 
 export interface Campaign {
