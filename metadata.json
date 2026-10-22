@@ -1,0 +1,6 @@
+{
+  "name": "AppPulse Intelligence",
+  "description": "Multi-platform app review intelligence, competitor research, complaint clustering, and business outreach platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
