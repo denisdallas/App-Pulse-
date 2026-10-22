@@ -169,7 +169,9 @@ export class AppPulseStore {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
       }
-      fs.writeFileSync(DATA_FILE, JSON.stringify(this.data, null, 2), 'utf-8');
+      const tempFile = `${DATA_FILE}.tmp`;
+      fs.writeFileSync(tempFile, JSON.stringify(this.data, null, 2), 'utf-8');
+      fs.renameSync(tempFile, DATA_FILE);
     } catch (e) {
       console.error('[AppPulseStore] Error writing data file:', e);
     }
@@ -384,57 +386,6 @@ export class AppPulseStore {
 
         job.progress = 65;
         this.save();
-
-        // If connector returned 0 (e.g. rate limit, or not steam), enrich with realistic marketplace reviews for the target app
-        if (incoming.length === 0) {
-          const timestamp = new Date().toISOString();
-          incoming = [
-            {
-              id: `${app.id}_rev_${Date.now()}_1`,
-              appId: app.id,
-              appName: app.name,
-              marketplace: app.marketplace,
-              text: `Latest release of ${app.name} introduces severe battery drain and background memory crashes on Android 15. The team needs to address performance immediately.`,
-              starRating: 1,
-              reviewDate: timestamp,
-              language: 'en',
-              helpfulVotes: 19,
-              appVersion: '2.4.1',
-              collectedAt: timestamp,
-              classification: {
-                category: 'Bugs & Crashes',
-                sentiment: 'negative',
-                keywords: ['battery drain', 'crash', 'Android 15'],
-                severity: 'High',
-                isBug: true,
-                isFeatureRequest: false,
-                isPricingIssue: false,
-              },
-            },
-            {
-              id: `${app.id}_rev_${Date.now()}_2`,
-              appId: app.id,
-              appName: app.name,
-              marketplace: app.marketplace,
-              text: `Subscription pricing keeps going up while essential workflow features like multi-project export remain absent. Customer support takes over 4 days to respond.`,
-              starRating: 2,
-              reviewDate: timestamp,
-              language: 'en',
-              helpfulVotes: 34,
-              appVersion: '2.4.0',
-              collectedAt: timestamp,
-              classification: {
-                category: 'Pricing & Subscriptions',
-                sentiment: 'negative',
-                keywords: ['subscription price', 'export missing', 'support delay'],
-                severity: 'High',
-                isBug: false,
-                isFeatureRequest: true,
-                isPricingIssue: true,
-              },
-            },
-          ];
-        }
 
         const { uniqueReviews, duplicatesCount } = deduplicateReviews(incoming, this.data.reviews);
         this.data.reviews.unshift(...uniqueReviews);
