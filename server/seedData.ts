@@ -804,6 +804,42 @@ export const SEED_CONTACTS: Contact[] = [
   },
 ];
 
+export const SEED_CAMPAIGNS: Campaign[] = [
+  {
+    id: 'camp_01',
+    name: 'SaaS Multi-Currency & Offline Wedge Pitch',
+    objective: 'product_partnership',
+    tone: 'Founder-to-Founder',
+    targetCategory: 'Finance',
+    templateSubject: 'Feedback on {{appName}} export limitations & potential integration',
+    templateBody: 'Hi {{name}},\n\nI noticed extensive feedback from international users on {{appName}} regarding currency conversion limits. We have built an automated multi-currency invoicing module that could plug into your existing workflow.\n\nWould you be open to a 10-minute chat?\n\nBest,\nDenis',
+    recipients: [
+      {
+        contactId: 'cnt_01',
+        email: 'partnerships@intuit.com',
+        company: 'Intuit Inc.',
+        appName: 'QuickBooks Online Accounting',
+        personalizedSubject: 'QuickBooks multi-currency mobile feedback & wedge integration',
+        personalizedBody: 'Hi Sarah,\n\nOur market intelligence indicates 34% of recent 1-star reviews cite currency conversion issues on mobile. We have built an integration to solve this.',
+        status: 'pending',
+      },
+    ],
+    status: 'draft',
+    stats: {
+      total: 1,
+      approved: 0,
+      sent: 0,
+      delivered: 0,
+      opened: 0,
+      replied: 0,
+      bounced: 0,
+      unsubscribed: 0,
+      suppressed: 0,
+    },
+    createdAt: '2026-03-25T10:00:00Z',
+  },
+];
+
 export const SEED_SUPPRESSION: SuppressionRecord[] = [
   {
     id: 'sup_01',

@@ -1,4 +1,4 @@
-export type Marketplace = 'googleplay' | 'steam' | 'microsoft' | 'apple';
+export type Marketplace = 'googleplay' | 'steam' | 'microsoft' | 'appstore';
 
 export type AppCategory = 
   | 'Finance'
@@ -49,6 +49,8 @@ export interface Application {
   tags: string[];
   hasBugMentions?: boolean;
   hasFeatureRequests?: boolean;
+  isDemo?: boolean;
+  provenance?: 'live' | 'seed' | 'imported';
 }
 
 export interface PredictedWeakness {
@@ -98,12 +100,8 @@ export interface ReviewClassification {
   isPricingIssue: boolean;
 }
 
-export type DataProvenance = 'seed' | 'live_marketplace' | 'ai_generated' | 'calculated';
-
 export interface Review {
   id: string; // source review identifier or composite
-  provenance?: DataProvenance;
-  sourceReviewId?: string;
   appId: string;
   appName: string;
   marketplace: Marketplace;
@@ -120,6 +118,10 @@ export interface Review {
   notes?: string;
   savedToCollection?: boolean;
   tagList?: string[];
+  provenance?: 'live' | 'seed' | 'imported';
+  sourceRecordId?: string;
+  sourceUrl?: string;
+  isDemo?: boolean;
 }
 
 export interface ComplaintTheme {
@@ -140,6 +142,8 @@ export interface ComplaintTheme {
   validationSteps: string[];
   trend: 'emerging' | 'stable' | 'decreasing';
   createdAt: string;
+  evidenceReviewIds?: string[];
+  isDemo?: boolean;
 }
 
 export interface OpportunityScoreBreakdown {
@@ -169,21 +173,27 @@ export interface Opportunity {
   tags: string[];
   status: 'validating' | 'planned' | 'draft' | 'archived';
   createdAt: string;
+  evidenceStrength?: 'High' | 'Medium' | 'Low';
+  confidenceScore?: number;
+  isEstimate?: boolean;
+  validationStep?: string;
+  isDemo?: boolean;
 }
 
 export interface CollectionJob {
   id: string;
+  workspaceId?: string;
   appId: string;
   appName: string;
   marketplace: Marketplace;
-  status: 'queued' | 'running' | 'completed' | 'failed';
-  outcome?: 'collected' | 'empty' | 'unsupported' | 'failed';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   progress: number; // 0 - 100
   collectedCount: number;
   deduplicatedCount: number;
   error?: string;
   startedAt: string;
   completedAt?: string;
+  retryCount?: number;
 }
 
 export interface Contact {
@@ -203,6 +213,10 @@ export interface Contact {
   consentBasis: 'Legitimate Interest (B2B)' | 'Public Publisher Info' | 'Inquiry Request';
   notes?: string;
   createdAt: string;
+  verifiedSource?: string;
+  isVerified?: boolean;
+  confidence?: number;
+  isDemo?: boolean;
 }
 
 export interface CampaignRecipient {
@@ -212,10 +226,10 @@ export interface CampaignRecipient {
   appName: string;
   personalizedSubject: string;
   personalizedBody: string;
-  status: 'pending' | 'approved' | 'queued' | 'sent' | 'delivered' | 'failed' | 'bounced' | 'unsubscribed' | 'suppressed';
+  status: 'pending' | 'approved' | 'sent' | 'bounced' | 'unsubscribed' | 'suppressed' | 'failed';
+  providerMessageId?: string;
+  errorReason?: string;
   sentAt?: string;
-  deliveredAt?: string;
-  failureReason?: string;
 }
 
 export interface Campaign {
@@ -283,6 +297,46 @@ export interface SystemStats {
   suppressionCount: number;
   complaintBreakdown: { category: string; count: number }[];
   marketplacesBreakdown: { marketplace: Marketplace; count: number }[];
-  liveReviewCount?: number;
-  demonstrationReviewCount?: number;
+}
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: 'admin' | 'member' | 'viewer';
+  createdAt: string;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  slug: string;
+  createdAt: string;
+}
+
+export interface ReportRecord {
+  id: string;
+  workspaceId: string;
+  projectId?: string;
+  title: string;
+  fileType: 'pdf' | 'csv' | 'xlsx' | 'json';
+  filePath: string;
+  fileSize: number;
+  status: 'completed' | 'generating' | 'failed';
+  generatedAt: string;
+  downloadUrl: string;
+}
+
+export interface IntegrationSetting {
+  id: string;
+  marketplace: string;
+  displayName: string;
+  status: 'not_configured' | 'testing' | 'connected_verified' | 'rate_limited' | 'temporarily_unavailable' | 'error';
+  latencyMs: number;
+  message: string;
+  reviewCoverage: string;
+  lastTestedAt?: string;
+  lastTestOutcome?: string;
+  hasCredentials?: boolean;
+  requiredCredentials?: string[];
 }

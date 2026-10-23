@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AppPulse Implementation Reality Audit</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
+    
+    :root {
+      --primary: #0f172a;
+      --indigo: #4f46e5;
+      --indigo-dark: #3730a3;
+      --emerald: #059669;
+      --amber: #d97706;
+      --rose: #dc2626;
+      --sky: #0284c7;
+      --slate-50: #f8fafc;
+      --slate-100: #f1f5f9;
+      --slate-200: #e2e8f0;
+      --slate-300: #cbd5e1;
+      --slate-600: #475569;
+      --slate-800: #1e293b;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      color: var(--slate-800);
+      background: #f8fafc;
+      line-height: 1.5;
+      padding: 32px 16px;
+    }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
+      overflow: hidden;
+      border: 1px solid var(--slate-200);
+    }
+
+    .top-bar {
+      background: var(--primary);
+      color: #ffffff;
+      padding: 32px 40px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 20px;
+    }
+
+    .title-group h1 {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .title-group p {
+      color: #94a3b8;
+      font-size: 14px;
+      margin-top: 6px;
+    }
+
+    .meta-tag {
+      font-size: 11px;
+      color: #cbd5e1;
+      margin-top: 8px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .action-group {
+      display: flex;
+      gap: 12px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      border: none;
+    }
+
+    .btn-download {
+      background: #6366f1;
+      color: #ffffff;
+      box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+    }
+    .btn-download:hover {
+      background: #4f46e5;
+    }
+
+    .btn-print {
+      background: rgba(255,255,255,0.12);
+      color: #ffffff;
+      border: 1px solid rgba(255,255,255,0.25);
+    }
+    .btn-print:hover {
+      background: rgba(255,255,255,0.2);
+    }
+
+    .content {
+      padding: 40px;
+    }
+
+    h2 {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--primary);
+      margin-top: 32px;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--slate-200);
+      padding-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    h2:first-of-type { margin-top: 0; }
+
+    p, li {
+      font-size: 14px;
+      color: var(--slate-600);
+      line-height: 1.6;
+    }
+
+    .summary-box {
+      background: var(--slate-50);
+      border-left: 4px solid var(--indigo);
+      padding: 18px 22px;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 24px;
+    }
+
+    .summary-box p {
+      color: var(--slate-800);
+      margin-bottom: 10px;
+    }
+
+    .summary-box ul {
+      margin-left: 20px;
+    }
+
+    .summary-box li {
+      margin-bottom: 6px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 24px 0;
+      font-size: 13px;
+    }
+
+    th {
+      background: var(--slate-100);
+      color: var(--primary);
+      text-align: left;
+      padding: 10px 14px;
+      font-weight: 700;
+      border-bottom: 2px solid var(--slate-200);
+    }
+
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--slate-200);
+      color: var(--slate-800);
+      vertical-align: top;
+    }
+
+    tr:nth-child(even) td {
+      background: var(--slate-50);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .badge-verified { background: #d1fae5; color: #065f46; }
+    .badge-partial { background: #e0f2fe; color: #0369a1; }
+    .badge-mock { background: #fef3c7; color: #92400e; }
+    .badge-not { background: #fee2e2; color: #991b1b; }
+
+    .code-inline {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      background: var(--slate-100);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #0f172a;
+    }
+
+    .priority-card {
+      background: #ffffff;
+      border: 1px solid var(--slate-200);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 12px;
+    }
+
+    .priority-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--indigo);
+      margin-bottom: 4px;
+    }
+
+    .recommendation-box {
+      background: #eef2ff;
+      border: 1px solid #c7d2fe;
+      border-radius: 10px;
+      padding: 20px;
+      margin-top: 28px;
+    }
+
+    .recommendation-box h3 {
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--indigo-dark);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .recommendation-box p {
+      color: #1e1b4b;
+      font-size: 13.5px;
+    }
+
+    @media print {
+      body { background: #ffffff; padding: 0; }
+      .container { box-shadow: none; border: none; max-width: 100%; }
+      .action-group { display: none !important; }
+      .top-bar { padding: 24px; }
+      .content { padding: 24px; }
+      tr, .priority-card { page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="top-bar">
+      <div class="title-group">
+        <h1>AppPulse Intelligence</h1>
+        <p>Implementation Verification & Technical Reality Audit</p>
+        <div class="meta-tag">AUDIT DATE: OCTOBER 2026 | RUNTIME: LINUX/NODE.JS 22 | STATUS: COMPREHENSIVE</div>
+      </div>
+      <div class="action-group">
+        <a id="downloadPdfLink" class="btn btn-download" href="data:application/pdf;base64,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IDAgb2JqCihBcHBQdWxzZSwgQXVkaXQsIE1hcmtldCBJbnRlbGxpZ2VuY2UsIEdvb2dsZSBQbGF5LCBTdGVhbSwgTWljcm9zb2Z0IFN0b3JlKQplbmRvYmoKMTkgMCBvYmoKPDwKL1Byb2R1Y2VyIDIwIDAgUgovQ3JlYXRvciAyMSAwIFIKL0NyZWF0aW9uRGF0ZSAyMiAwIFIKL1RpdGxlIDIzIDAgUgovQXV0aG9yIDI0IDAgUgovU3ViamVjdCAyNSAwIFIKL0tleXdvcmRzIDI2IDAgUgo+PgplbmRvYmoKOSAwIG9iago8PAovVHlwZSAvRm9udAovQmFzZUZvbnQgL0hlbHZldGljYQovU3VidHlwZSAvVHlwZTEKL0VuY29kaW5nIC9XaW5BbnNpRW5jb2RpbmcKPj4KZW5kb2JqCjggMCBvYmoKPDwKL1R5cGUgL0ZvbnQKL0Jhc2VGb250IC9IZWx2ZXRpY2EtQm9sZAovU3VidHlwZSAvVHlwZTEKL0VuY29kaW5nIC9XaW5BbnNpRW5jb2RpbmcKPj4KZW5kb2JqCjQgMCBvYmoKPDwKPj4KZW5kb2JqCjMgMCBvYmoKPDwKL1R5cGUgL0NhdGFsb2cKL1BhZ2VzIDEgMCBSCi9OYW1lcyAyIDAgUgo+PgplbmRvYmoKMSAwIG9iago8PAovVHlwZSAvUGFnZXMKL0NvdW50IDQKL0tpZHMgWzcgMCBSIDEyIDAgUiAxNSAwIFIgMTggMCBSXQo+PgplbmRvYmoKMiAwIG9iago8PAovRGVzdHMgPDwKICAvTmFtZXMgWwpdCj4+Cj4+CmVuZG9iagp4cmVmCjAgMjcKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDA5NTEwIDAwMDAwIG4gCjAwMDAwMDk1ODggMDAwMDAgbiAKMDAwMDAwOTQ0OCAwMDAwMCBuIAowMDAwMDA5NDI3IDAwMDAwIG4gCjAwMDAwMDAyNTQgMDAwMDAgbiAKMDAwMDAwMDEzNyAwMDAwMCBuIAowMDAwMDAwMDE1IDAwMDAwIG4gCjAwMDAwMDkzMjUgMDAwMDAgbiAKMDAwMDAwOTIyOCAwMDAwMCBuIAowMDAwMDAzMzE0IDAwMDAwIG4gCjAwMDAwMDMxOTYgMDAwMDAgbiAKMDAwMDAwMzA3MSAwMDAwMCBuIAowMDAwMDA1NTk5IDAwMDAwIG4gCjAwMDAwMDU0ODEgMDAwMDAgbiAKMDAwMDAwNTM1NiAwMDAwMCBuIAowMDAwMDA4MzQ4IDAwMDAwIG4gCjAwMDAwMDgyNDAgMDAwMDAgbiAKMDAwMDAwODExNSAwMDAwMCBuIAowMDAwMDA5MDkwIDAwMDAwIG4gCjAwMDAwMDg2NDMgMDAwMDAgbiAKMDAwMDAwODY2OCAwMDAwMCBuIAowMDAwMDA4NjkzIDAwMDAwIG4gCjAwMDAwMDg3MjkgMDAwMDAgbiAKMDAwMDAwODg4NCAwMDAwMCBuIAowMDAwMDA4OTI4IDAwMDAwIG4gCjAwMDAwMDg5OTggMDAwMDAgbiAKdHJhaWxlcgo8PAovU2l6ZSAyNwovUm9vdCAzIDAgUgovSW5mbyAxOSAwIFIKL0lEIFs8NzA4NTRmNGVmZDljN2YxNmE0M2QzYTQzYTIxZDMxZjg+IDw3MDg1NGY0ZWZkOWM3ZjE2YTQzZDNhNDNhMjFkMzFmOD5dCj4+CnN0YXJ0eHJlZgo5NjM1CiUlRU9GCg==" download="AppPulse_Implementation_Reality_Audit.pdf">
+          📥 Download PDF Report
+        </a>
+        <button class="btn btn-print" onclick="window.print()">
+          🖨️ Print
+        </button>
+      </div>
+    </div>
+
+    <div class="content">
+      <h2>1. Executive Summary</h2>
+      <div class="summary-box">
+        <p>This audit rigorously inspects the current codebase of AppPulse Intelligence against its PRD requirements to verify functional capabilities and document all prototype stubs, mock simulations, and persistence risks:</p>
+        <ul>
+          <li><strong>Frontend & Algorithmic Modules:</strong> React 19 UI, Tailwind styling, RFC-4180 CSV serializer, Sha-256 deduplication, and multi-factor opportunity scoring pass 100% of automated unit tests.</li>
+          <li><strong>Steam Marketplace:</strong> <span class="badge badge-verified">VERIFIED LIVE</span>. Ingests real public Valve Web API search and community review feeds.</li>
+          <li><strong>Google Play & Microsoft Store:</strong> <span class="badge badge-mock">MOCK ONLY</span>. Currently empty stubs that trigger automatic fallback to synthetic reviews.</li>
+          <li><strong>Persistence Architecture:</strong> <span class="badge badge-partial">PARTIALLY WORKING</span>. Stored in flat JSON (<span class="code-inline">store.json</span>) without ACID transactions or lock isolation.</li>
+          <li><strong>Auth & Messaging:</strong> <span class="badge badge-not">NOT IMPLEMENTED</span> for real auth / dispatch. Delivery relies on in-memory counters.</li>
+        </ul>
+      </div>
+
+      <h2>2. Verified Automated Checks & Build Evidence</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Command / Automated Check</th>
+            <th>Result Status</th>
+            <th>Execution Evidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>npm test</strong> (Native Test Runner)</td>
+            <td><span class="badge badge-verified">PASSED (0 ERRORS)</span></td>
+            <td>6/6 tests passing in 234ms. Tested scoring edge-cases, dedup collisions, suppression rules, CSV escaping, and versions.</td>
+          </tr>
+          <tr>
+            <td><strong>npm run lint</strong> (tsc --noEmit)</td>
+            <td><span class="badge badge-verified">PASSED (0 ERRORS)</span></td>
+            <td>Zero TypeScript diagnostic errors across entire project.</td>
+          </tr>
+          <tr>
+            <td><strong>npm run build</strong> (Vite 8.3 Production)</td>
+            <td><span class="badge badge-verified">PASSED (0 ERRORS)</span></td>
+            <td>Production client bundle compiled in 460ms (HTML 1.31kB, CSS 49.4kB, JS 628.7kB).</td>
+          </tr>
+          <tr>
+            <td><strong>Steam Live Search Endpoint</strong></td>
+            <td><span class="badge badge-verified">VERIFIED (HTTP 200)</span></td>
+            <td>Live HTTP call to <span class="code-inline">store.steampowered.com/api/storesearch</span> returned 6 real apps for query "accounting".</td>
+          </tr>
+          <tr>
+            <td><strong>Steam Live Reviews Endpoint</strong></td>
+            <td><span class="badge badge-verified">VERIFIED (HTTP 200)</span></td>
+            <td>Live HTTP call to <span class="code-inline">store.steampowered.com/appreviews/730</span> returned genuine public gamer reviews.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>3. Feature-by-Feature Reality Audit Matrix</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Feature Module</th>
+            <th>Classification</th>
+            <th>Findings & Code References</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1. App Discovery & Filtering</td>
+            <td><span class="badge badge-partial">PARTIALLY WORKING</span></td>
+            <td>Local multi-filtering in <span class="code-inline">server/store.ts</span> works; Steam live search works; GP/MS return empty.</td>
+          </tr>
+          <tr>
+            <td>2. Google Play Review Retrieval</td>
+            <td><span class="badge badge-mock">MOCK ONLY</span></td>
+            <td><span class="code-inline">googleplay.ts</span> stub returns <span class="code-inline">[]</span>. <span class="code-inline">server/store.ts</span> generates 2 synthetic reviews.</td>
+          </tr>
+          <tr>
+            <td>3. Microsoft Store Review Retrieval</td>
+            <td><span class="badge badge-mock">MOCK ONLY</span></td>
+            <td><span class="code-inline">microsoft.ts</span> stub returns <span class="code-inline">[]</span>. <span class="code-inline">server/store.ts</span> generates 2 synthetic reviews.</td>
+          </tr>
+          <tr>
+            <td>4. Steam Store & Review Retrieval</td>
+            <td><span class="badge badge-verified">VERIFIED</span></td>
+            <td>Real Valve API integration tested and operational without credentials.</td>
+          </tr>
+          <tr>
+            <td>5. Review Normalization & Dedup</td>
+            <td><span class="badge badge-partial">PARTIALLY WORKING</span></td>
+            <td>SHA-256 fingerprinting works and is tested. Missing pagination cursors and HTTP 429 backoff retries.</td>
+          </tr>
+          <tr>
+            <td>6. Background Job Engine</td>
+            <td><span class="badge badge-mock">MOCK ONLY</span></td>
+            <td>Jobs execute via <span class="code-inline">setTimeout(800)</span> in memory. No durable queue; jobs are lost on server reboot.</td>
+          </tr>
+          <tr>
+            <td>7. Data Persistence & Recovery</td>
+            <td><span class="badge badge-partial">PARTIALLY WORKING</span></td>
+            <td>Data survives reboots via <span class="code-inline">store.json</span>, but lacks ACID guarantees and atomic write locking.</td>
+          </tr>
+          <tr>
+            <td>8. Auth & Workspace Isolation</td>
+            <td><span class="badge badge-not">NOT IMPLEMENTED</span></td>
+            <td>No user accounts or password hashing. Workspaces in header are client-only UI filters.</td>
+          </tr>
+          <tr>
+            <td>9. AI Complaint Classification</td>
+            <td><span class="badge badge-verified">VERIFIED</span></td>
+            <td><span class="code-inline">@google/genai</span> SDK configured with <span class="code-inline">gemini-2.5-flash</span> and JSON schema response. Rule fallback when key absent.</td>
+          </tr>
+          <tr>
+            <td>10. Evidence Linking to Reviews</td>
+            <td><span class="badge badge-partial">PARTIALLY WORKING</span></td>
+            <td>Quotes snippet text, but does not persist foreign keys linking <span class="code-inline">ComplaintTheme</span> to <span class="code-inline">Review.id</span>.</td>
+          </tr>
+          <tr>
+            <td>11. Competitor Comparison</td>
+            <td><span class="badge badge-verified">VERIFIED</span></td>
+            <td>Calculates negative review rates, complaint breakdowns, and shared gaps dynamically.</td>
+          </tr>
+          <tr>
+            <td>12. Opportunity Scoring Logic</td>
+            <td><span class="badge badge-verified">VERIFIED</span></td>
+            <td>Passes all unit tests. Calculates severity, frequency, recency, and competitor breadth accurately.</td>
+          </tr>
+          <tr>
+            <td>13. CSV Import & Export</td>
+            <td><span class="badge badge-verified">VERIFIED</span></td>
+            <td>RFC-4180 compliant serializer handling double quotes, commas, and multi-line reviews.</td>
+          </tr>
+          <tr>
+            <td>14. Contact & Draft Management</td>
+            <td><span class="badge badge-verified">VERIFIED</span></td>
+            <td>Full contact CRUD and AI contextual email copy generator working cleanly.</td>
+          </tr>
+          <tr>
+            <td>15. Email & WhatsApp Delivery</td>
+            <td><span class="badge badge-partial">PARTIALLY WORKING</span></td>
+            <td>Suppression engine verified. Outbound delivery is simulated with in-memory counter; no SMTP/Twilio.</td>
+          </tr>
+          <tr>
+            <td>16. Integration Health & Settings</td>
+            <td><span class="badge badge-mock">MOCK ONLY</span></td>
+            <td>Hardcoded latencies (42ms, 84ms, 110ms) and static chips in <span class="code-inline">SettingsView.tsx</span>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>4. Data Architecture, Security & Persistence Risks</h2>
+      <div class="priority-card">
+        <div class="priority-title">1. Flat JSON File Persistence (store.json)</div>
+        <p>Uses synchronous <span class="code-inline">fs.writeFileSync</span> on every state mutation. A sudden process exit or power cut during serialization can empty or corrupt the database.</p>
+      </div>
+      <div class="priority-card">
+        <div class="priority-title">2. Concurrency Overwrite Hazard</div>
+        <p>Multiple concurrent HTTP mutations modify in-memory arrays and flush the complete database without file locks or transactions.</p>
+      </div>
+      <div class="priority-card">
+        <div class="priority-title">3. Seed & Synthetic Review Pollution</div>
+        <p>Synthetic fallback reviews are inserted into the same array as genuine marketplace reviews without a provenance tag.</p>
+      </div>
+
+      <h2>5. Top 5 Prioritized Issues to Resolve</h2>
+      <div class="priority-card">
+        <div class="priority-title">Priority 1: Remove Synthetic Review Fallbacks</div>
+        <p>In <span class="code-inline">server/store.ts</span>, connector failures must record real error states instead of injecting fabricated reviews (violates PRD Rule 2E).</p>
+      </div>
+      <div class="priority-card">
+        <div class="priority-title">Priority 2: Migrate to Relational Database (Cloud SQL / PostgreSQL)</div>
+        <p>Provides durable ACID transactions, foreign keys linking themes to reviews, and isolated workspace partitions.</p>
+      </div>
+      <div class="priority-card">
+        <div class="priority-title">Priority 3: Implement Live Google Play & Microsoft Connectors</div>
+        <p>Replace stubs with actual public store scrapers or official APIs to match Steam's live retrieval capability.</p>
+      </div>
+      <div class="priority-card">
+        <div class="priority-title">Priority 4: Persistent Background Job Processing</div>
+        <p>Replace in-memory timeouts with durable job queue storing progress and surviving server restarts.</p>
+      </div>
+      <div class="priority-card">
+        <div class="priority-title">Priority 5: Real Outbound Email Transport (SMTP / Resend)</div>
+        <p>Connect genuine email transport for verifiable outreach dispatch and delivery receipts.</p>
+      </div>
+
+      <div class="recommendation-box">
+        <h3>Recommended Smallest Safe Implementation Step (MVP)</h3>
+        <p>Remove synthetic fallback generation from <span class="code-inline">server/store.ts</span> so intelligence data is 100% genuine; harden the Steam connector with pagination and error recovery; and connect real ping latency checks in Settings. This establishes pure data integrity prior to relational database provisioning.</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

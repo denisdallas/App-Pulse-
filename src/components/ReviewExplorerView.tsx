@@ -232,6 +232,16 @@ export const ReviewExplorerView: React.FC<ReviewExplorerViewProps> = ({
                           </span>
                         </>
                       )}
+                      <span aria-hidden="true" className="text-slate-400">·</span>
+                      {review.isDemo ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-800/40 font-mono">
+                          Demo / Seed
+                        </span>
+                      ) : (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800/40 font-mono">
+                          Verified Live
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2">

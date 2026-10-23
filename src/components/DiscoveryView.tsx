@@ -45,8 +45,9 @@ const CATEGORIES: ('all' | AppCategory)[] = [
 
 const MARKETPLACES: { id: 'all' | Marketplace; label: string }[] = [
   { id: 'all', label: 'All Stores' },
-  { id: 'googleplay', label: 'Google Play' },
+  { id: 'appstore', label: 'Apple App Store' },
   { id: 'steam', label: 'Steam' },
+  { id: 'googleplay', label: 'Google Play' },
   { id: 'microsoft', label: 'Microsoft Store' },
 ];
 

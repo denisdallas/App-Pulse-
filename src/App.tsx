@@ -351,6 +351,9 @@ export default function App() {
     const res = await fetch(`/api/campaigns/${campaignId}/send`, { method: 'POST' });
     const data = await res.json();
     loadAllData();
+    if (!res.ok || !data.success) {
+      throw new Error(data.message || 'Campaign dispatch failed');
+    }
     return data;
   };
 

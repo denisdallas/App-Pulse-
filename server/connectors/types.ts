@@ -12,18 +12,32 @@ export interface ReviewFetchOptions {
   cursor?: string;
 }
 
-export class UnsupportedConnectorError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'UnsupportedConnectorError';
-  }
-}
-
 export interface FetchReviewsResult {
   reviews: Omit<Review, 'fingerprint'>[];
   totalAvailable?: number;
   hasMore?: boolean;
   nextCursor?: string;
+  error?: string;
+}
+
+export type ConnectorStatus = 
+  | 'not_configured'
+  | 'not_implemented'
+  | 'testing'
+  | 'connected_verified'
+  | 'rate_limited'
+  | 'temporarily_unavailable'
+  | 'error';
+
+export interface ConnectorHealth {
+  status: ConnectorStatus;
+  latencyMs: number;
+  message: string;
+  reviewCoverage: string;
+  lastTestedAt?: string;
+  lastTestOutcome?: string;
+  requiredCredentials?: string[];
+  hasCredentials?: boolean;
 }
 
 export interface MarketplaceConnector {
@@ -31,10 +45,5 @@ export interface MarketplaceConnector {
   displayName: string;
   searchApps(options: SearchOptions): Promise<Application[]>;
   fetchReviews(appId: string, options?: ReviewFetchOptions): Promise<FetchReviewsResult>;
-  getStatus(): Promise<{
-    status: 'operational' | 'rate_limited' | 'degraded' | 'unsupported' | 'blocked' | 'partially_supported';
-    latencyMs: number;
-    message: string;
-    reviewCoverage: string;
-  }>;
+  getStatus(): Promise<ConnectorHealth>;
 }

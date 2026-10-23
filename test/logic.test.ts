@@ -202,3 +202,71 @@ test('calculateFutureOpportunityScore calculates weighted forecast scores', () =
   assert.ok(lowRiskForecast.futureOpportunityScore < 45);
 });
 
+test('escapeSpreadsheetValue prevents formula and command injection', async () => {
+  const { escapeSpreadsheetValue } = await import('../server/reports/generator.ts');
+  assert.equal(escapeSpreadsheetValue('=cmd|"/c calc"!A0'), '\'=cmd|"/c calc"!A0');
+  assert.equal(escapeSpreadsheetValue('+SUM(A1:A10)'), '\'+SUM(A1:A10)');
+  assert.equal(escapeSpreadsheetValue('-10% discount'), '\'-10% discount');
+  assert.equal(escapeSpreadsheetValue('@username'), '\'@username');
+  assert.equal(escapeSpreadsheetValue('Safe Application Name'), 'Safe Application Name');
+  assert.equal(escapeSpreadsheetValue(42), '42');
+});
+
+test('Zero synthetic reviews rule: empty connector result yields 0 saved reviews', async () => {
+  const { repository } = await import('../server/db/repository.ts');
+  const wsId = 'ws_test_empty';
+
+  // Simulating collection outcome when connector returns 0 reviews
+  const incoming: any[] = [];
+  const { inserted, duplicates } = await repository.saveReviews(wsId, incoming);
+
+  assert.equal(inserted, 0, 'Must insert 0 reviews when connector returns 0');
+  assert.equal(duplicates, 0, 'Must record 0 duplicates');
+
+  const reviews = await repository.getReviews(wsId);
+  assert.equal(reviews.length, 0, 'Workspace reviews array must remain empty without synthetic fallbacks');
+});
+
+test('Database migrations and relational persistence survive transactions', async () => {
+  const { runMigrations } = await import('../server/db/migrations.ts');
+  const { db } = await import('../server/db/database.ts');
+  const { repository } = await import('../server/db/repository.ts');
+
+  await runMigrations();
+  assert.ok(db.getEngineName().includes('Relational') || db.getEngineName() === 'PostgreSQL');
+
+  const ws = await repository.getWorkspaceById('ws_default');
+  assert.ok(ws !== null, 'Default workspace must exist');
+  assert.equal(ws.id, 'ws_default');
+
+  const stats = await repository.getStats('ws_default');
+  assert.ok(stats.totalApps >= 1, 'Seeded apps must be queryable');
+  assert.ok(stats.totalReviews >= 1, 'Seeded reviews must be queryable');
+});
+
+test('Outreach email dispatch correctly blocks simulated delivery when unconfigured', async () => {
+  const { getEmailProviderConfig, sendOutreachEmail } = await import('../server/outreach/delivery.ts');
+  
+  // In default testing environment without SMTP credentials
+  const config = getEmailProviderConfig();
+  if (!config.isReady) {
+    const outcome = await sendOutreachEmail({
+      recipient: {
+        contactId: 'cnt_test',
+        email: 'test@example.com',
+        company: 'Test Corp',
+        appName: 'Test App',
+        personalizedSubject: 'Subject',
+        personalizedBody: 'Body',
+        status: 'pending',
+      },
+      subject: 'Subject',
+      body: 'Body',
+    });
+
+    assert.equal(outcome.success, false, 'Dispatch must fail when provider is unconfigured');
+    assert.ok(outcome.error?.includes('Simulated delivery is strictly forbidden'), 'Error must cite no simulated delivery rule');
+  }
+});
+
+
