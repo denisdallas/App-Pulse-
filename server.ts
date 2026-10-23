@@ -21,6 +21,14 @@ const PORT = Number(process.env.PORT) || 3000;
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Baseline response hardening. These headers are safe for the existing local and hosted UI.
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
+
 // Request logging
 app.use((req, res, next) => {
   if (req.path.startsWith('/api')) {
@@ -48,8 +56,8 @@ app.get('/api/reports/research.pdf', async (req, res) => {
     const apps = store.getApps().filter((item) => requestedAppIds.length === 0 || requestedAppIds.includes(item.id));
     const appIds = new Set(apps.map((item) => item.id));
     const reviews = store.getReviews({ limit: 5000 }).reviews.filter((item) => appIds.size === 0 || appIds.has(item.appId));
-    const themes = store.getThemes();
-    const opportunities = store.getOpportunities();
+    const themes = store.getThemes().filter((theme) => appIds.size === 0 || theme.affectedApps.some((appId) => appIds.has(appId)));
+    const opportunities = store.getOpportunities().filter((opportunity) => appIds.size === 0 || opportunity.supportingAppIds.some((appId) => appIds.has(appId)));
     const report = await generateResearchReport({ title: 'AppPulse Intelligence Research Report', apps, reviews, themes, opportunities });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename="apppulse-research-report.pdf"');
@@ -57,6 +65,25 @@ app.get('/api/reports/research.pdf', async (req, res) => {
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Unable to generate research report' });
   }
+});
+
+// Connector readiness is configuration-based until an actual retrieval test succeeds.
+app.get('/api/integrations/status', (_req, res) => {
+  const statuses = connectorRegistry.getAll().map((connector) => ({
+    marketplace: connector.marketplace,
+    name: connector.displayName,
+    capabilities: { discovery: true, reviews: connector.marketplace === 'steam' || connector.marketplace === 'apple' },
+    status: connector.marketplace === 'steam' ? 'partially_supported' : 'configuration_required',
+    lastTestedAt: null,
+    lastSuccessfulRetrievalAt: null,
+    nextAction: connector.marketplace === 'steam'
+      ? 'Run a live discovery/review retrieval test before treating this connector as verified.'
+      : 'Configure and verify the permitted catalog or review access for this marketplace.',
+  }));
+  res.json({ generatedAt: new Date().toISOString(), statuses, email: {
+    status: process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS ? 'configured_not_tested' : 'not_configured',
+    nextAction: 'Configure and test a provider before sending any message.',
+  }, ai: { status: process.env.API_KEY ? 'configured_not_tested' : 'not_configured' } });
 });
 
 // 2. Applications
