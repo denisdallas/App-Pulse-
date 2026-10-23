@@ -683,10 +683,15 @@ async function startServer() {
 
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
+const vite = await createViteServer({
+    server: {
+      middlewareMode: true,
+      // Express owns the HTTP server in this development setup. There is no
+      // Vite WebSocket server to accept the injected HMR client connection.
+      hmr: false,
+    },
+    appType: 'spa',
+  });
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, 'dist');
