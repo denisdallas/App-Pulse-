@@ -252,7 +252,8 @@
         "OCR Failure",
         "Critical Workflow Block"
       ],
-      "fingerprint": "fp_z2y9j7"
+      "fingerprint": "fp_z2y9j7",
+      "provenance": "seed"
     },
     {
       "id": "qb_rev_02",
@@ -284,7 +285,8 @@
         "Pricing Outrage",
         "Bank Disconnects"
       ],
-      "fingerprint": "fp_9muayr"
+      "fingerprint": "fp_9muayr",
+      "provenance": "seed"
     },
     {
       "id": "qb_rev_03",
@@ -315,7 +317,8 @@
         "Feature Request",
         "International Invoicing"
       ],
-      "fingerprint": "fp_lu478x"
+      "fingerprint": "fp_lu478x",
+      "provenance": "seed"
     },
     {
       "id": "exp_rev_01",
@@ -347,7 +350,8 @@
         "Data Loss",
         "Customer Support Bot"
       ],
-      "fingerprint": "fp_7nflz2"
+      "fingerprint": "fp_7nflz2",
+      "provenance": "seed"
     },
     {
       "id": "exp_rev_02",
@@ -378,7 +382,8 @@
         "Slow Processing",
         "OCR Bottleneck"
       ],
-      "fingerprint": "fp_uy0sc4"
+      "fingerprint": "fp_uy0sc4",
+      "provenance": "seed"
     },
     {
       "id": "notion_rev_01",
@@ -410,7 +415,8 @@
         "Offline Mode Gap",
         "Top Requested Feature"
       ],
-      "fingerprint": "fp_31xb7k"
+      "fingerprint": "fp_31xb7k",
+      "provenance": "seed"
     },
     {
       "id": "notion_rev_02",
@@ -441,7 +447,8 @@
         "Typing Latency",
         "Database Lag"
       ],
-      "fingerprint": "fp_tlz7r"
+      "fingerprint": "fp_tlz7r",
+      "provenance": "seed"
     },
     {
       "id": "clickup_rev_01",
@@ -473,7 +480,8 @@
         "Unacceptable Launch Speed",
         "Bloatware"
       ],
-      "fingerprint": "fp_zb8bn8"
+      "fingerprint": "fp_zb8bn8",
+      "provenance": "seed"
     },
     {
       "id": "docker_rev_01",
@@ -505,7 +513,8 @@
         "RAM Exhaustion",
         "Developer Workstation Blocker"
       ],
-      "fingerprint": "fp_93p0ih"
+      "fingerprint": "fp_93p0ih",
+      "provenance": "seed"
     },
     {
       "id": "cs2_rev_01",
@@ -536,7 +545,8 @@
         "Hitreg Desync",
         "Missing Legacy Features"
       ],
-      "fingerprint": "fp_m3c1d6"
+      "fingerprint": "fp_m3c1d6",
+      "provenance": "seed"
     },
     {
       "id": "cs2_rev_02",
@@ -567,7 +577,8 @@
         "Anti-Cheat Deficit",
         "Competitive Integrity"
       ],
-      "fingerprint": "fp_qf3ms5"
+      "fingerprint": "fp_qf3ms5",
+      "provenance": "seed"
     },
     {
       "id": "cs2_city_01",
@@ -599,7 +610,8 @@
         "Severe Optimization Defect",
         "Shallow Simulation"
       ],
-      "fingerprint": "fp_h8ndqr"
+      "fingerprint": "fp_h8ndqr",
+      "provenance": "seed"
     },
     {
       "id": "mfp_rev_01",
@@ -631,7 +643,8 @@
         "Hostile Monetization",
         "Paywalled Free Features"
       ],
-      "fingerprint": "fp_yd7qo4"
+      "fingerprint": "fp_yd7qo4",
+      "provenance": "seed"
     },
     {
       "id": "mfp_rev_02",
@@ -662,7 +675,8 @@
         "Data Inaccuracy",
         "Nutritional Risk"
       ],
-      "fingerprint": "fp_u2758t"
+      "fingerprint": "fp_u2758t",
+      "provenance": "seed"
     }
   ],
   "themes": [
