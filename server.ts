@@ -9,6 +9,9 @@ import { analyzeComplaintsWithAI, generateOpportunitiesWithAI, draftOutreachEmai
 import { jsonToCsv, parseCsv } from './src/lib/csv.ts';
 import { Application, Contact, Opportunity } from './src/types.ts';
 import { generateResearchReport } from './server/reports.ts';
+import { databaseConfigured } from './server/db.ts';
+import { migrate } from './server/migrate.ts';
+import { authMiddleware, currentSession, login, logout, register, requestToken, tokenCookie } from './server/auth.ts';
 
 dotenv.config();
 
@@ -38,6 +41,41 @@ app.use((req, res, next) => {
 });
 
 // --- API ROUTES ---
+
+app.post('/api/auth/register', async (req, res) => {
+  if (!databaseConfigured()) return res.status(503).json({ error: 'Authentication requires DATABASE_URL configuration' });
+  try {
+    const session = await register(String(req.body.email || ''), String(req.body.password || ''), String(req.body.workspaceName || 'My Workspace'));
+    tokenCookie(res, session.token, session.expires);
+    res.status(201).json({ user: session.user, expiresAt: session.expires.toISOString() });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Registration failed' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  if (!databaseConfigured()) return res.status(503).json({ error: 'Authentication requires DATABASE_URL configuration' });
+  try {
+    const session = await login(String(req.body.email || ''), String(req.body.password || ''));
+    tokenCookie(res, session.token, session.expires);
+    res.json({ user: session.user, expiresAt: session.expires.toISOString() });
+  } catch (error: any) {
+    res.status(401).json({ error: error.message || 'Login failed' });
+  }
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+  await logout(requestToken(req));
+  res.setHeader('Set-Cookie', 'apppulse_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax');
+  res.status(204).end();
+});
+
+app.get('/api/auth/session', async (req, res) => {
+  if (!databaseConfigured()) return res.status(503).json({ error: 'Authentication requires DATABASE_URL configuration' });
+  const session = await currentSession(requestToken(req));
+  if (!session) return res.status(401).json({ error: 'Authentication required' });
+  res.json({ user: session });
+});
 
 // 1. Dashboard Stats
 app.get('/api/stats', (req, res) => {
@@ -679,6 +717,10 @@ app.get(['/api/audit-report/download', '/AppPulse_Implementation_Audit_Report.pd
 // --- VITE MIDDLEWARE INTEGRATION (FULL-STACK DEV & PRODUCTION) ---
 
 async function startServer() {
+  if (databaseConfigured()) {
+    await migrate();
+    console.log('[AppPulse Server] PostgreSQL migrations applied');
+  }
   const isProduction = process.env.NODE_ENV === 'production';
 
   if (!isProduction) {
