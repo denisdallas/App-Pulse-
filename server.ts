@@ -42,6 +42,19 @@ app.use((req, res, next) => {
 
 // --- API ROUTES ---
 
+// Liveness is public; readiness reports configuration without exposing secrets.
+app.get('/api/health', async (_req, res) => {
+  const configured = databaseConfigured();
+  if (!configured) return res.status(503).json({ status: 'not_ready', database: 'not_configured', authentication: 'unavailable' });
+  try {
+    const { query } = await import('./server/db.ts');
+    await query('SELECT 1');
+    return res.json({ status: 'ready', database: 'reachable', authentication: process.env.AUTH_SESSION_SECRET ? 'configured' : 'misconfigured' });
+  } catch {
+    return res.status(503).json({ status: 'not_ready', database: 'unreachable', authentication: process.env.AUTH_SESSION_SECRET ? 'configured' : 'misconfigured' });
+  }
+});
+
 app.post('/api/auth/register', async (req, res) => {
   if (!databaseConfigured()) return res.status(503).json({ error: 'Authentication requires DATABASE_URL configuration' });
   try {
