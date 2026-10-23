@@ -25,9 +25,12 @@ import { OpportunityFinderView } from './components/OpportunityFinderView.tsx';
 import { OutreachStudioView } from './components/OutreachStudioView.tsx';
 import { ProjectsView } from './components/ProjectsView.tsx';
 import { SettingsView } from './components/SettingsView.tsx';
+import { AuthView } from './components/AuthView.tsx';
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<ViewTab>('dashboard');
+  const [authState, setAuthState] = useState<'loading' | 'authenticated' | 'unauthenticated'>('loading');
+  const [authError, setAuthError] = useState<string | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [apps, setApps] = useState<Application[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
@@ -108,8 +111,37 @@ export default function App() {
   };
 
   useEffect(() => {
-    loadAllData();
+    let active = true;
+    fetch('/api/auth/session', { credentials: 'include' })
+      .then(async (response) => {
+        if (!active) return;
+        if (response.ok) {
+          setAuthState('authenticated');
+          return;
+        }
+        if (response.status === 401) {
+          setAuthState('unauthenticated');
+          return;
+        }
+        const body = await response.json().catch(() => ({}));
+        setAuthError(body.error || 'Authentication service unavailable');
+        setAuthState('unauthenticated');
+      })
+      .catch(() => {
+        if (active) {
+          setAuthError('Unable to reach the authentication service');
+          setAuthState('unauthenticated');
+        }
+      });
+    return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (authState === 'authenticated') loadAllData();
+  }, [authState]);
+
+  if (authState === 'loading') return <main className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-300">Loading your workspace…</main>;
+  if (authState === 'unauthenticated') return <AuthView onAuthenticated={() => { setAuthError(null); setAuthState('authenticated'); }} />;
 
   // Handlers
   const handleToggleCompare = (appId: string) => {
