@@ -72,9 +72,21 @@ app.post('/api/auth/logout', async (req, res) => {
 
 app.get('/api/auth/session', async (req, res) => {
   if (!databaseConfigured()) return res.status(503).json({ error: 'Authentication requires DATABASE_URL configuration' });
-  const session = await currentSession(requestToken(req));
-  if (!session) return res.status(401).json({ error: 'Authentication required' });
-  res.json({ user: session });
+  try {
+    const session = await currentSession(requestToken(req));
+    if (!session) return res.status(401).json({ error: 'Authentication required' });
+    res.json({ user: session });
+  } catch {
+    res.status(503).json({ error: 'Authentication service unavailable' });
+  }
+});
+
+// Domain APIs are public only for the explicitly local JSON-development mode.
+// Production and database-backed deployments require a server-validated session.
+app.use('/api', (req, res, next) => {
+  if (req.path.startsWith('/auth/') || req.path === '/integrations/status') return next();
+  if (!databaseConfigured() && process.env.NODE_ENV !== 'production') return next();
+  return authMiddleware(req, res, next);
 });
 
 // 1. Dashboard Stats
@@ -717,7 +729,13 @@ app.get(['/api/audit-report/download', '/AppPulse_Implementation_Audit_Report.pd
 // --- VITE MIDDLEWARE INTEGRATION (FULL-STACK DEV & PRODUCTION) ---
 
 async function startServer() {
+  if (process.env.NODE_ENV === 'production' && !databaseConfigured()) {
+    throw new Error('DATABASE_URL is required in production; refusing to start with JSON persistence');
+  }
   if (databaseConfigured()) {
+    if (!process.env.AUTH_SESSION_SECRET) {
+      throw new Error('AUTH_SESSION_SECRET is required when DATABASE_URL is configured');
+    }
     await migrate();
     console.log('[AppPulse Server] PostgreSQL migrations applied');
   }

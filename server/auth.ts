@@ -6,7 +6,9 @@ const SESSION_COOKIE = 'apppulse_session';
 const SESSION_DAYS = 30;
 
 function hash(value: string): string {
-  return crypto.createHash('sha256').update(value).digest('hex');
+  const secret = process.env.AUTH_SESSION_SECRET;
+  if (!secret) throw new Error('AUTH_SESSION_SECRET is not configured');
+  return crypto.createHmac('sha256', secret).update(value).digest('hex');
 }
 
 function passwordHash(password: string): string {
@@ -74,7 +76,7 @@ export async function logout(token?: string): Promise<void> {
 
 export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const session = await currentSession(req.cookies?.[SESSION_COOKIE]);
+    const session = await currentSession(requestToken(req));
     if (!session) { res.status(401).json({ error: 'Authentication required' }); return; }
     res.locals.auth = session;
     next();
