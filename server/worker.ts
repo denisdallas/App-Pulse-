@@ -1,7 +1,13 @@
 import crypto from 'node:crypto';
-import { closeDatabase, databaseConfigured } from './db.ts';
-import { migrate } from './migrate.ts';
-import { processNextJob } from './job-worker.ts';
+import dotenv from 'dotenv';
+
+dotenv.config({ path: ['.env.development.local', '.env.local', '.env'] });
+
+const [{ closeDatabase, databaseConfigured }, { migrate }, { processNextJob }] = await Promise.all([
+  import('./db.ts'),
+  import('./migrate.ts'),
+  import('./job-worker.ts'),
+]);
 
 const workerId = process.env.JOB_WORKER_ID?.slice(0, 160) || `worker_${crypto.randomUUID()}`;
 const pollInterval = Math.max(250, Math.min(60_000, Number(process.env.JOB_WORKER_POLL_MS) || 2_000));

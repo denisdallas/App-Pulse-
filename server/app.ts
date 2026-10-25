@@ -76,6 +76,11 @@ function constantTimeEqual(received: string, expected: string): boolean {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+function configuredWorkerTriggerSecrets(): string[] {
+  return [process.env.CRON_SECRET, process.env.JOB_TRIGGER_SECRET]
+    .filter((secret): secret is string => Boolean(secret && Buffer.byteLength(secret) >= 32));
+}
+
 function jobInputAppIds(value: unknown): string[] | undefined {
   const ids = stringList(value, 'appIds');
   if (ids && ids.length > 50) throw new ApiError(400, 'At most 50 applications may be selected');
@@ -136,7 +141,7 @@ app.get(['/api/health', '/api/health/ready'], asyncRoute(async (_req, res) => {
     }
   }
   const workerMode = process.env.JOB_EXECUTION_MODE;
-  const workerConfigured = (workerMode === 'worker' || workerMode === 'http_trigger') && (workerMode !== 'http_trigger' || Boolean(process.env.JOB_TRIGGER_SECRET && Buffer.byteLength(process.env.JOB_TRIGGER_SECRET) >= 32));
+  const workerConfigured = (workerMode === 'worker' || workerMode === 'http_trigger') && (workerMode !== 'http_trigger' || configuredWorkerTriggerSecrets().length > 0);
   const workerActive = activeWorkers > 0;
   const ready = database && reachable && authentication && migrations.current && workerConfigured && workerActive;
   res.status(ready ? 200 : 503).json({
@@ -314,20 +319,22 @@ app.post('/api/jobs/:id/cancel', ownerOnly, asyncRoute(async (req, res) => {
   res.json({ success: true, status: 'cancelled' });
 }));
 
-app.post('/api/internal/jobs/process', asyncRoute(async (req, res) => {
+const processTriggeredJob = asyncRoute(async (req, res) => {
   if (process.env.JOB_EXECUTION_MODE !== 'http_trigger') throw new ApiError(503, 'HTTP-triggered job execution is not enabled');
-  const expected = process.env.JOB_TRIGGER_SECRET;
+  const secrets = configuredWorkerTriggerSecrets();
   const authorization = req.header('authorization') || '';
   const match = authorization.match(/^Bearer\s+(.+)$/i);
-  if (!expected || Buffer.byteLength(expected) < 32 || !match || !constantTimeEqual(match[1], expected)) {
-    res.status(expected ? 401 : 503).json({ error: expected ? 'Worker authentication failed' : 'Worker trigger is not configured' });
+  const authorized = Boolean(match && secrets.some((secret) => constantTimeEqual(match[1], secret)));
+  if (!secrets.length || !authorized) {
+    res.status(secrets.length ? 401 : 503).json({ error: secrets.length ? 'Worker authentication failed' : 'Worker trigger is not configured' });
     return;
   }
   const result = await processNextJob('http-trigger');
   res.status(result ? 200 : 204);
   if (result) res.json({ processed: true, status: result.status });
   else res.end();
-}));
+});
+app.route('/api/internal/jobs/process').get(processTriggeredJob).post(processTriggeredJob);
 
 app.post('/api/apps/collect', ownerOnly, asyncRoute(async (req, res) => {
   const actor = actorFrom(res);
@@ -617,7 +624,7 @@ app.get('/api/export', ownerOnly, asyncRoute(async (req, res) => {
 }));
 
 const sendAuditReport = asyncRoute(async (_req, res) => {
-  const filePath = path.resolve(serverDirectory, '..', 'AppPulse_Implementation_Audit_Report.pdf');
+  const filePath = path.resolve(serverDirectory, 'AppPulse_Implementation_Audit_Report.pdf');
   if (!fs.existsSync(filePath)) throw new ApiError(404, 'Audit PDF report not found');
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', 'attachment; filename="AppPulse_Implementation_Audit_Report.pdf"');

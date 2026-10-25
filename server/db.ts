@@ -50,7 +50,10 @@ function getDatabase(): NodePgDatabase {
 export function getMigrationPool(): Pool {
   const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
   if (!validPostgresUrl(connectionString)) {
-    throw new Error('DATABASE_URL or DATABASE_URL_UNPOOLED must be a valid PostgreSQL connection URL');
+    throw new Error('DATABASE_URL_UNPOOLED or a direct DATABASE_URL must be a valid PostgreSQL connection URL');
+  }
+  if (new URL(connectionString).hostname.toLowerCase().includes('-pooler')) {
+    throw new Error('PostgreSQL migrations require a direct, non-pooled connection URL; configure DATABASE_URL_UNPOOLED');
   }
   migrationPool ??= new Pool({
     connectionString,
