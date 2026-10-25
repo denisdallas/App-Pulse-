@@ -276,7 +276,7 @@ SELECT
   NULLIF(result, '{}'::jsonb),
   CASE
     WHEN status = 'running' THEN 'Legacy running job was re-queued during migration.'
-    WHEN status = 'completed' AND (result IS NULL OR result = '{}'::jsonb) THEN 'Legacy completion had no verifiable result; it was not treated as success.'
+    WHEN status = 'completed' AND (result IS NULL OR result = '{}'::jsonb) THEN 'Legacy completion had no verifiable result and was not treated as success.'
     ELSE error_message
   END,
   created_at,
