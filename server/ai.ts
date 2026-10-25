@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { GoogleGenAI } from '@google/genai';
 import { Review, ComplaintTheme, Opportunity, Contact, Application, PredictedWeakness } from '../src/types.ts';
 import { calculateOpportunityScore } from '../src/lib/scoring.ts';
@@ -70,44 +71,42 @@ ${JSON.stringify(reviewsSample, null, 2)}
 
       const parsed = JSON.parse(response.text?.trim() || '[]');
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map((item, idx) => {
-          const matchedAppIds = affectedApps
-            .filter((a) => (item.affectedAppNames || []).includes(a.name))
-            .map((a) => a.id);
-
-          return {
+        const grounded = parsed.flatMap((item, idx) => {
+          const quotes = Array.isArray(item.representativeQuotes)
+            ? item.representativeQuotes.filter((quote: unknown): quote is string => typeof quote === 'string' && quote.trim().length >= 12)
+            : [];
+          const matchedReviews = reviews.filter((review) => quotes.some((quote) => review.text.includes(quote.trim())));
+          if (!matchedReviews.length) return [];
+          const matchedAppIds = [...new Set(matchedReviews.map((review) => review.appId))];
+          const matchedAppNames = [...new Set(matchedReviews.map((review) => review.appName))];
+          const matchedDates = matchedReviews.map((review) => review.reviewDate).filter(Boolean).sort();
+          const validSeverity = ['Critical', 'High', 'Medium', 'Low'].includes(item.severity) ? item.severity : 'High';
+          const confidence = Number(item.confidenceScore);
+          return [{
             id: `theme_ai_${Date.now()}_${idx}`,
-            title: item.title,
+            title: typeof item.title === 'string' ? item.title.slice(0, 180) : 'Collected review theme',
             category: item.category || 'Other',
-            summary: item.summary,
-            reviewCount: reviews.filter((review) =>
-              (item.representativeQuotes || []).some((quote: unknown) =>
-                typeof quote === 'string' && quote.length > 0 && review.text.includes(quote),
-              ),
-            ).length || reviews.filter((review) =>
-              (item.affectedAppNames || []).includes(review.appName),
-            ).length,
+            summary: typeof item.summary === 'string' ? item.summary.slice(0, 1200) : '',
+            reviewCount: matchedReviews.length,
             affectedApps: matchedAppIds,
-            affectedAppNames: (item.affectedAppNames || []).filter((name: unknown): name is string =>
-              typeof name === 'string' && affectedApps.some((app) => app.name === name),
-            ),
-            representativeQuotes: (item.representativeQuotes || []).filter((quote: unknown): quote is string =>
-              typeof quote === 'string' && reviews.some((review) => review.text.includes(quote)),
-            ),
-            earliestDate: reviews[reviews.length - 1]?.reviewDate,
-            latestDate: reviews[0]?.reviewDate,
-            severity: item.severity || 'High',
-            confidenceScore: item.confidenceScore || 0.9,
-            potentialImprovement: item.potentialImprovement || 'Architect improved solution',
-            validationHypothesis: item.validationHypothesis || 'Market validation pending',
-            validationSteps: item.validationSteps || ['Customer discovery interviews'],
-            trend: item.trend || 'emerging',
+            affectedAppNames: matchedAppNames,
+            representativeQuotes: [...new Set(quotes.filter((quote) => matchedReviews.some((review) => review.text.includes(quote.trim()))))].slice(0, 5),
+            supportingReviewIds: [...new Set(matchedReviews.map((review) => review.id))],
+            earliestDate: matchedDates[0] || '',
+            latestDate: matchedDates.at(-1) || '',
+            severity: validSeverity,
+            confidenceScore: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.5,
+            potentialImprovement: typeof item.potentialImprovement === 'string' ? item.potentialImprovement.slice(0, 600) : '',
+            validationHypothesis: typeof item.validationHypothesis === 'string' ? item.validationHypothesis.slice(0, 600) : '',
+            validationSteps: Array.isArray(item.validationSteps) ? item.validationSteps.filter((step: unknown): step is string => typeof step === 'string').slice(0, 8) : [],
+            trend: ['emerging', 'stable', 'decreasing'].includes(item.trend) ? item.trend : 'stable',
             createdAt: new Date().toISOString(),
-          };
+          }];
         });
+        if (grounded.length) return grounded;
       }
-    } catch (err) {
-      console.warn('[analyzeComplaintsWithAI] Gemini API call error, using deterministic semantic clustering:', err);
+    } catch {
+      console.warn('[analyzeComplaintsWithAI] Gemini request failed; using deterministic clustering of collected reviews.');
     }
   }
 
@@ -116,15 +115,16 @@ ${JSON.stringify(reviewsSample, null, 2)}
 }
 
 function getFallbackThemes(reviews: Review[], affectedApps: Application[]): ComplaintTheme[] {
-  const categoryCounts: Record<string, { quotes: string[]; apps: Set<string>; count: number }> = {};
+  const categoryCounts: Record<string, { quotes: string[]; apps: Set<string>; reviewIds: string[]; count: number }> = {};
 
   for (const r of reviews) {
     const cat = r.classification?.category || 'Bugs & Crashes';
     if (!categoryCounts[cat]) {
-      categoryCounts[cat] = { quotes: [], apps: new Set(), count: 0 };
+      categoryCounts[cat] = { quotes: [], apps: new Set(), reviewIds: [], count: 0 };
     }
     categoryCounts[cat].count++;
     categoryCounts[cat].apps.add(r.appName);
+    categoryCounts[cat].reviewIds.push(r.id);
     if (categoryCounts[cat].quotes.length < 3 && r.text.length > 30) {
       categoryCounts[cat].quotes.push(r.text.slice(0, 150) + '...');
     }
@@ -143,6 +143,7 @@ function getFallbackThemes(reviews: Review[], affectedApps: Application[]): Comp
       affectedApps: appIds,
       affectedAppNames: appNames,
       representativeQuotes: info.quotes,
+      supportingReviewIds: info.reviewIds,
       earliestDate: reviews[reviews.length - 1]?.reviewDate || '',
       latestDate: reviews[0]?.reviewDate || '',
       severity: cat.includes('Crash') || cat.includes('Bugs') ? 'Critical' : 'High',
@@ -169,7 +170,7 @@ export async function generateOpportunitiesWithAI(
 ): Promise<Opportunity[]> {
   const opportunities: Opportunity[] = [];
 
-  for (const theme of themes.slice(0, 3)) {
+  for (const theme of themes.filter((item) => item.supportingReviewIds?.length).slice(0, 3)) {
     const scoreResult = calculateOpportunityScore({
       severity: theme.severity,
       complaintFrequency: theme.reviewCount,
@@ -181,13 +182,14 @@ export async function generateOpportunitiesWithAI(
       id: `opp_gen_${Date.now()}_${theme.id}`,
       title: `Next-Gen Solution: ${theme.title}`,
       problemStatement: theme.summary,
-      targetUser: 'Professionals and SMB teams experiencing severe productivity loss from incumbent limitations.',
+      targetUser: 'Users represented in the supporting collected review evidence.',
       supportingAppIds: theme.affectedApps,
       supportingAppNames: theme.affectedAppNames,
-      supportingReviewIds: [],
+      supportingReviewIds: theme.supportingReviewIds || [],
+      supportingReviewQuotes: theme.representativeQuotes,
       complaintFrequency: theme.reviewCount,
       severity: theme.severity,
-      existingSolutions: `${theme.affectedAppNames.join(', ')} currently dominate the space but have persistent complaints regarding ${theme.category}.`,
+      existingSolutions: `Collected reviews from ${theme.affectedAppNames.join(', ')} include evidence in the ${theme.category} category.`,
       proposedConcept: theme.potentialImprovement,
       differentiationHypothesis: theme.validationHypothesis,
       validationQuestions: [
@@ -218,14 +220,18 @@ export async function draftOutreachEmailWithAI(params: {
   tone: string;
 }): Promise<{ subject: string; body: string }> {
   const { contact, opportunity, app, objective, tone } = params;
+  if (!opportunity?.supportingReviewIds?.length || !opportunity.supportingReviewQuotes?.length) {
+    throw new Error('An opportunity linked to collected review evidence is required to draft outreach.');
+  }
 
   if (aiClient) {
     try {
       const prompt = `Draft a highly professional, ethical, and concise B2B cold outreach email.
 Recipient: ${contact.name}, ${contact.title} at ${contact.company} (${contact.website || ''})
 Associated App: ${app?.name || contact.appName || 'Your Application'}
-Product Research Insight: ${opportunity?.problemStatement || 'Customer review analytics reveal key opportunities around performance and user retention'}
-Proposed Concept: ${opportunity?.proposedConcept || 'Technical improvements based on customer feedback'}
+Product Research Insight: ${opportunity.problemStatement}
+Evidence from collected public reviews: ${JSON.stringify(opportunity.supportingReviewQuotes.slice(0, 2))}
+Proposed Concept: ${opportunity.proposedConcept}
 Outreach Objective: ${objective} (e.g. Product Partnership, Feature Pitch, Advisory / Founder Discovery)
 Preferred Tone: ${tone} (e.g. Consultative, Founder-to-Founder, Value-First, Technical)
 
@@ -235,6 +241,7 @@ Strict Guidelines:
 3. Plain text format, no markdown asterisks.
 4. Conclude with a clear, low-friction call to action (e.g. 10-minute feedback exchange).
 5. Must include an ethical opt-out line at the very bottom.
+6. Do not invent review counts, metrics, customer behavior, or claims beyond the supplied evidence.
 `;
 
       const response = await aiClient.models.generateContent({
@@ -256,14 +263,14 @@ Strict Guidelines:
         subject,
         body: bodyLines.join('\n\n').trim(),
       };
-    } catch (e) {
-      console.warn('[draftOutreachEmailWithAI] Gemini error, using template:', e);
+    } catch {
+      console.warn('[draftOutreachEmailWithAI] Gemini request failed; using an evidence-linked template.');
     }
   }
 
   return {
-    subject: `Review analytics & user retention insights for ${app?.name || contact.appName || contact.company}`,
-    body: `Hi ${contact.name.split(' ')[0] || 'there'},\n\nOur research team at AppPulse Intelligence recently aggregated public user reviews for ${app?.name || contact.appName || contact.company} to analyze user retention bottlenecks.\n\nWe identified recurring feedback around ${opportunity?.title || 'core user workflows and performance'}, and compiled evidence-based suggestions that could reduce churn.\n\nWould you be open to a brief 10-minute chat next week to review the findings?\n\nBest regards,\nAppPulse Research Team\n\nIf you prefer not to receive research updates, simply reply "Unsubscribe" and your contact record will be immediately suppressed.`,
+    subject: `Review insight on ${app?.name || contact.appName || contact.company}`,
+    body: `Hi ${contact.name.split(' ')[0] || 'there'},\n\nWe have a product observation based on collected public reviews associated with ${app?.name || opportunity.supportingAppNames[0] || 'your product'}.\n\nThe review-linked opportunity is: ${opportunity.title}. The concept is a hypothesis for discussion, not a measured customer outcome.\n\nWould you be open to a brief feedback exchange?\n\nBest regards,\nAppPulse Research Team\n\nIf you prefer not to receive further messages, reply "Unsubscribe" and your contact will be suppressed.`,
   };
 }
 

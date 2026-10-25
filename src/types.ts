@@ -25,7 +25,7 @@ export type ComplaintCategory =
   | 'Feature Requests'
   | 'Other';
 
-export type UpdateFrequency = 'Daily' | 'Weekly' | 'Bi-weekly' | 'Monthly' | 'Quarterly' | 'Stale';
+export type UpdateFrequency = 'Daily' | 'Weekly' | 'Bi-weekly' | 'Monthly' | 'Quarterly' | 'Stale' | 'Unknown';
 
 export interface Application {
   id: string;
@@ -38,6 +38,7 @@ export interface Application {
   rating: number;
   ratingCount: number;
   reviewCount: number;
+  metadataStatus?: 'catalog_only' | 'verified' | 'unknown';
   platform: string;
   releaseDate: string;
   lastUpdated: string;
@@ -70,6 +71,8 @@ export interface PredictedWeakness {
     marketTAMReadinessScore: number;// 15%: willingness of market segment to switch
   };
   evidenceReviewQuotes: string[];
+  supportingReviewIds?: string[];
+  riskBasis?: 'model_estimate_from_review_evidence' | 'negative_review_share_proxy';
   validationMilestones: string[];
   status: 'forecasted' | 'validated' | 'promoted_to_opportunity';
   createdAt: string;
@@ -109,6 +112,7 @@ export interface Review {
   marketplace: Marketplace;
   text: string;
   starRating: number; // 1 - 5
+  ratingScale?: 'stars' | 'binary_recommendation';
   reviewDate: string;
   language: string;
   reviewUrl?: string;
@@ -131,6 +135,7 @@ export interface ComplaintTheme {
   affectedApps: string[];
   affectedAppNames: string[];
   representativeQuotes: string[];
+  supportingReviewIds?: string[];
   earliestDate: string;
   latestDate: string;
   severity: 'Critical' | 'High' | 'Medium' | 'Low';
@@ -157,6 +162,7 @@ export interface Opportunity {
   supportingAppIds: string[];
   supportingAppNames: string[];
   supportingReviewIds: string[];
+  supportingReviewQuotes?: string[];
   complaintFrequency: number;
   severity: 'Critical' | 'High' | 'Medium' | 'Low';
   existingSolutions: string;
@@ -176,7 +182,10 @@ export interface CollectionJob {
   appId: string;
   appName: string;
   marketplace: Marketplace;
-  status: 'queued' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  jobType?: 'collection' | 'analysis' | 'forecast' | 'opportunities' | 'export' | 'report';
+  attempts?: number;
+  maxAttempts?: number;
   outcome?: 'collected' | 'empty' | 'unsupported' | 'failed';
   progress: number; // 0 - 100
   collectedCount: number;
@@ -200,7 +209,7 @@ export interface Contact {
   appName?: string;
   opportunityId?: string;
   status: 'New' | 'Contacted' | 'In Discussion' | 'Converted' | 'Do Not Contact';
-  consentBasis: 'Legitimate Interest (B2B)' | 'Public Publisher Info' | 'Inquiry Request';
+  consentBasis: 'Legitimate Interest (B2B)' | 'Public Publisher Info' | 'Inquiry Request' | 'Unverified';
   notes?: string;
   createdAt: string;
 }

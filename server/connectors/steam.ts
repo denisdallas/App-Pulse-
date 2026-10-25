@@ -1,127 +1,109 @@
-import { Application, Review } from '../../src/types.ts';
-import { MarketplaceConnector, SearchOptions, ReviewFetchOptions, FetchReviewsResult } from './types.ts';
+import type { Application, Review } from '../../src/types.ts';
+import type { MarketplaceConnector, SearchOptions, ReviewFetchOptions, FetchReviewsResult } from './types.ts';
 
-/**
- * Steam Marketplace Connector
- * Utilizes the official public Steam Store Search API and Steam Community App Reviews API.
- */
+/** Public Steam Store discovery and Community Reviews endpoints. */
 export class SteamConnector implements MarketplaceConnector {
   marketplace = 'steam' as const;
   displayName = 'Steam (Valve)';
 
   async searchApps(options: SearchOptions): Promise<Application[]> {
     const term = encodeURIComponent(options.query || 'game');
-    const url = `https://store.steampowered.com/api/storesearch/?term=${term}&l=english&cc=US`;
+    const response = await fetch(`https://store.steampowered.com/api/storesearch/?term=${term}&l=english&cc=US`, {
+      headers: { 'User-Agent': 'AppPulse-Intelligence/1.0' },
+    });
+    if (!response.ok) throw new Error(`Steam catalog returned HTTP ${response.status}`);
+    const data = await response.json() as { items?: unknown };
+    if (!data || !Array.isArray(data.items)) throw new Error('Steam catalog returned an invalid response');
 
-    try {
-      const res = await fetch(url, { headers: { 'User-Agent': 'AppPulse-Intelligence/1.0' } });
-      if (!res.ok) throw new Error(`Steam search returned status ${res.status}`);
-      const data = await res.json();
-
-      if (!data || !Array.isArray(data.items)) {
-        return [];
-      }
-
-      const results: Application[] = data.items.slice(0, options.limit || 15).map((item: any) => {
-        const appId = String(item.id);
-        return {
-          id: `steam_${appId}`,
-          name: item.name,
-          iconUrl: item.tiny_image || `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg`,
-          publisher: 'Steam Community Publisher',
-          marketplace: 'steam',
-          description: `Steam Store title ${item.name}. Multi-platform desktop application and game with community public reviews.`,
-          category: 'Gaming',
-          rating: item.price ? 4.2 : 4.0,
-          ratingCount: 15400,
-          reviewCount: 3200,
-          platform: 'Windows, macOS, Linux',
-          releaseDate: '2023-09-01',
-          lastUpdated: new Date().toISOString().split('T')[0],
-          storeUrl: `https://store.steampowered.com/app/${appId}/`,
-          collectionAvailable: true,
-          status: 'active',
-          tags: ['PC', 'Gaming', 'Steam'],
-        };
-      });
-
-      return results;
-    } catch (err: any) {
-      console.warn('[SteamConnector] Search failed, falling back to curated registry:', err.message);
-      return [];
-    }
+    return data.items.slice(0, Math.max(1, Math.min(50, options.limit || 15))).flatMap((item: any) => {
+      if (!Number.isInteger(Number(item?.id)) || typeof item?.name !== 'string' || !item.name.trim()) return [];
+      const appId = String(item.id);
+      return [{
+        id: `steam_${appId}`,
+        name: item.name.trim(),
+        iconUrl: typeof item.tiny_image === 'string' && item.tiny_image ? item.tiny_image : undefined,
+        publisher: 'Not provided by catalog search',
+        marketplace: 'steam' as const,
+        description: 'Basic catalog metadata only; rating, publisher, release date, and review counts were not returned by this search endpoint.',
+        category: 'Gaming' as const,
+        rating: 0,
+        ratingCount: 0,
+        reviewCount: 0,
+        metadataStatus: 'catalog_only' as const,
+        platform: 'Not provided by catalog search',
+        releaseDate: 'Not provided',
+        lastUpdated: 'Not provided',
+        currentVersion: 'Not provided',
+        updateFrequency: 'Unknown' as const,
+        storeUrl: `https://store.steampowered.com/app/${appId}/`,
+        collectionAvailable: true,
+        status: 'active' as const,
+        tags: ['Steam'],
+      }];
+    });
   }
 
   async fetchReviews(appId: string, options: ReviewFetchOptions = {}): Promise<FetchReviewsResult> {
-    const rawAppId = appId.replace('steam_', '');
-    const filter = options.negativeOnly ? 'recent&review_type=negative' : 'recent&review_type=all';
-    const limit = options.limit || 30;
-    const url = `https://store.steampowered.com/appreviews/${rawAppId}?json=1&filter=${filter}&language=english&num_per_page=${limit}`;
+    const match = /^steam_(\d+)$/.exec(appId);
+    if (!match) throw new Error('Invalid Steam application identifier');
+    const rawAppId = match[1];
+    const reviewType = options.negativeOnly ? 'negative' : 'all';
+    const limit = Math.max(1, Math.min(100, options.limit || 30));
+    const url = `https://store.steampowered.com/appreviews/${rawAppId}?json=1&filter=recent&review_type=${reviewType}&language=english&num_per_page=${limit}`;
+    const response = await fetch(url, { headers: { 'User-Agent': 'AppPulse-Intelligence/1.0' } });
+    if (!response.ok) throw new Error(`Steam reviews returned HTTP ${response.status}`);
+    const data = await response.json() as { success?: number; reviews?: unknown; query_summary?: { total_reviews?: number } };
+    if (!data || data.success !== 1 || !Array.isArray(data.reviews)) throw new Error('Steam reviews returned an invalid response');
 
-    try {
-      const res = await fetch(url, { headers: { 'User-Agent': 'AppPulse-Intelligence/1.0' } });
-      if (!res.ok) throw new Error(`Steam reviews API HTTP ${res.status}`);
-      const data = await res.json();
-
-      if (!data || !data.success || !Array.isArray(data.reviews)) {
-        return { reviews: [], totalAvailable: 0, hasMore: false };
-      }
-
-      const reviews: Omit<Review, 'fingerprint'>[] = data.reviews.map((r: any) => {
-        // In Steam: voted_up is boolean. If voted_up is false => negative review (1-2 star equivalent)
-        const isNegative = !r.voted_up;
-        const starRating = isNegative ? 1 : 4;
-        const cleanedText = (r.review || '')
-          .replace(/\[\/?(b|i|u|h1|h2|h3|url|quote|code|list|\*)\]/gi, '')
-          .trim();
-
-        return {
-          id: `steam_rev_${r.recommendationid || Math.random().toString(36).slice(2)}`,
-          appId,
-          appName: `Steam App #${rawAppId}`,
-          marketplace: 'steam',
-          text: cleanedText,
-          starRating,
-          reviewDate: new Date(r.timestamp_created * 1000).toISOString(),
-          language: r.language || 'en',
-          reviewUrl: `https://steamcommunity.com/app/${rawAppId}/reviews/`,
-          helpfulVotes: r.votes_up || 0,
-          appVersion: r.author?.playtime_forever ? `${Math.round(r.author.playtime_forever / 60)}h playtime` : undefined,
-          collectedAt: new Date().toISOString(),
-          tagList: isNegative ? ['Steam Negative Feedback'] : [],
-        };
-      });
-
-      return {
-        reviews,
-        totalAvailable: data.query_summary?.total_reviews || reviews.length,
-        hasMore: reviews.length >= limit,
-      };
-    } catch (err: any) {
-      console.warn('[SteamConnector] Live fetch failed:', err.message);
-      return { reviews: [], totalAvailable: 0, hasMore: false };
-    }
+    const reviews: Omit<Review, 'fingerprint'>[] = data.reviews.flatMap((raw: any) => {
+      if ((typeof raw?.recommendationid !== 'string' && typeof raw?.recommendationid !== 'number') || typeof raw?.review !== 'string' || typeof raw?.voted_up !== 'boolean') return [];
+      const timestamp = Number(raw.timestamp_created);
+      if (!Number.isFinite(timestamp) || timestamp <= 0) return [];
+      const text = raw.review.replace(/\[\/?(b|i|u|h1|h2|h3|url|quote|code|list|\*)\]/gi, '').trim();
+      if (!text) return [];
+      const sourceReviewId = String(raw.recommendationid);
+      const positive = raw.voted_up;
+      return [{
+        id: `steam_review_${sourceReviewId}`,
+        sourceReviewId,
+        appId,
+        appName: `Steam App ${rawAppId}`,
+        marketplace: 'steam' as const,
+        text,
+        starRating: positive ? 5 : 1,
+        ratingScale: 'binary_recommendation' as const,
+        reviewDate: new Date(timestamp * 1000).toISOString(),
+        language: typeof raw.language === 'string' ? raw.language : 'und',
+        reviewUrl: `https://steamcommunity.com/app/${rawAppId}/reviews/`,
+        helpfulVotes: Number.isFinite(Number(raw.votes_up)) ? Math.max(0, Number(raw.votes_up)) : 0,
+        collectedAt: new Date().toISOString(),
+        tagList: positive ? [] : ['Steam Negative Recommendation'],
+      }];
+    });
+    const totalAvailable = Number.isFinite(data.query_summary?.total_reviews)
+      ? Math.max(0, Number(data.query_summary?.total_reviews))
+      : reviews.length;
+    return { reviews, totalAvailable, hasMore: totalAvailable > reviews.length };
   }
 
   async getStatus() {
-    const start = Date.now();
+    const started = Date.now();
     try {
-      const res = await fetch('https://store.steampowered.com/api/storesearch/?term=test&l=english', {
+      const response = await fetch('https://store.steampowered.com/api/storesearch/?term=test&l=english', {
         headers: { 'User-Agent': 'AppPulse-Intelligence/1.0' },
       });
-      const latencyMs = Date.now() - start;
       return {
-        status: res.ok ? ('operational' as const) : ('degraded' as const),
-        latencyMs,
-        message: res.ok ? 'Public Web Reviews API fully accessible without API key requirement' : `HTTP ${res.status}`,
-        reviewCoverage: 'Public Steam Community user reviews with playtime & vote metrics',
+        status: response.ok ? ('operational' as const) : ('degraded' as const),
+        latencyMs: Date.now() - started,
+        message: response.ok ? 'Steam catalog search endpoint responded; review retrieval has not been verified.' : `HTTP ${response.status}`,
+        reviewCoverage: 'Steam Community review endpoint is implemented; each collection result is persisted only after a successful response.',
       };
-    } catch (e: any) {
+    } catch {
       return {
         status: 'degraded' as const,
-        latencyMs: Date.now() - start,
-        message: e.message || 'Connection timeout',
-        reviewCoverage: 'Steam public store endpoint fallback mode',
+        latencyMs: Date.now() - started,
+        message: 'Steam catalog connectivity could not be verified.',
+        reviewCoverage: 'Review retrieval has not been verified.',
       };
     }
   }

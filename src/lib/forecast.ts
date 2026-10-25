@@ -87,6 +87,7 @@ export function calculateFutureOpportunityScore(params: {
   // Slower update cadence = higher inertia = bigger window for market entry
   const inertiaMap: Record<UpdateFrequency, number> = {
     Stale: 100,
+    Unknown: 50,
     Quarterly: 85,
     Monthly: 70,
     'Bi-weekly': 50,

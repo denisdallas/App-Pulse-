@@ -58,11 +58,8 @@ export class AppPulseStore {
   };
 
   constructor() {
-    // The legacy JSON repository remains available only for local development.
-    // Production startup rejects missing DATABASE_URL; domain-table migration is
-    // provided separately and is the required path for the next repository cutover.
-    if (process.env.NODE_ENV === 'production' && process.env.STORAGE_MODE === 'json') {
-      throw new Error('STORAGE_MODE=json is not allowed in production; configure PostgreSQL domain persistence');
+    if (process.env.NODE_ENV === 'production' || process.env.STORAGE_MODE !== 'json') {
+      throw new Error('The legacy JSON store is disabled unless STORAGE_MODE=json is explicitly set in local development.');
     }
     this.init();
   }
@@ -638,4 +635,3 @@ export class AppPulseStore {
   }
 }
 
-export const store = new AppPulseStore();
