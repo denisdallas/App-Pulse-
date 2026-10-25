@@ -2,7 +2,7 @@ import { useState } from 'react';
 
 type AuthMode = 'login' | 'register';
 
-export function AuthView({ onAuthenticated }: { onAuthenticated: () => void }) {
+export function AuthView({ onAuthenticated, serviceError }: { onAuthenticated: () => void; serviceError: string | null }) {
   const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -37,6 +37,7 @@ export function AuthView({ onAuthenticated }: { onAuthenticated: () => void }) {
         <p className="mb-2 text-sm font-semibold uppercase tracking-[0.2em] text-cyan-400">AppPulse Intelligence</p>
         <h1 className="mb-2 text-2xl font-semibold">{mode === 'login' ? 'Sign in to your workspace' : 'Create your workspace'}</h1>
         <p className="mb-6 text-sm text-slate-400">Your research data is private to your authenticated workspace.</p>
+        {serviceError && <p role="alert" aria-live="assertive" className="mb-4 rounded-lg border border-amber-800 bg-amber-950/40 p-3 text-sm text-amber-200">{serviceError}</p>}
         <form className="space-y-4" onSubmit={submit}>
           <label className="block text-sm text-slate-300">Email<input className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" type="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
           <label className="block text-sm text-slate-300">Password<input className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" type="password" minLength={12} required value={password} onChange={(event) => setPassword(event.target.value)} /><span className="mt-1 block text-xs text-slate-500">At least 12 characters.</span></label>

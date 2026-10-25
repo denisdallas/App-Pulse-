@@ -77,8 +77,8 @@ function constantTimeEqual(received: string, expected: string): boolean {
 }
 
 function configuredWorkerTriggerSecrets(): string[] {
-  return [process.env.CRON_SECRET, process.env.JOB_TRIGGER_SECRET]
-    .filter((secret): secret is string => Boolean(secret && Buffer.byteLength(secret) >= 32));
+  const secret = process.env.JOB_TRIGGER_SECRET;
+  return secret && Buffer.byteLength(secret) >= 32 ? [secret] : [];
 }
 
 function jobInputAppIds(value: unknown): string[] | undefined {
@@ -334,7 +334,7 @@ const processTriggeredJob = asyncRoute(async (req, res) => {
   if (result) res.json({ processed: true, status: result.status });
   else res.end();
 });
-app.route('/api/internal/jobs/process').get(processTriggeredJob).post(processTriggeredJob);
+  app.post('/api/internal/jobs/process', processTriggeredJob);
 
 app.post('/api/apps/collect', ownerOnly, asyncRoute(async (req, res) => {
   const actor = actorFrom(res);

@@ -216,7 +216,9 @@ export default function App() {
           return;
         }
         const body = await response.json().catch(() => ({}));
-        setAuthError(body.error || 'Authentication service unavailable');
+        setAuthError(body.error === 'Authentication requires DATABASE_URL configuration'
+          ? 'Database connection is not configured. Workspace sign-in and registration are unavailable.'
+          : body.error || 'Authentication service unavailable');
         setAuthState('unauthenticated');
       })
       .catch(() => {
@@ -233,7 +235,7 @@ export default function App() {
   }, [authState]);
 
   if (authState === 'loading') return <main className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-300">Loading your workspace…</main>;
-  if (authState === 'unauthenticated') return <AuthView onAuthenticated={() => { setAuthError(null); setAuthState('authenticated'); }} />;
+  if (authState === 'unauthenticated') return <AuthView serviceError={authError} onAuthenticated={() => { setAuthError(null); setAuthState('authenticated'); }} />;
 
   // Handlers
   const handleToggleCompare = (appId: string) => {
