@@ -8,6 +8,7 @@ import { compareVersions, isVersionInRange, calculateFutureOpportunityScore } fr
 import { Review, SuppressionRecord } from '../src/types.ts';
 import { GooglePlayConnector } from '../server/connectors/googleplay.ts';
 import { UnsupportedConnectorError } from '../server/connectors/types.ts';
+import { retryDelayMs, safeJobError } from '../server/job-queue.ts';
 
 test('unsupported marketplace connectors report an explicit unsupported error', async () => {
   const connector = new GooglePlayConnector();
@@ -200,5 +201,21 @@ test('calculateFutureOpportunityScore calculates weighted forecast scores', () =
   });
 
   assert.ok(lowRiskForecast.futureOpportunityScore < 45);
+});
+
+test('retryDelayMs applies bounded exponential backoff', () => {
+  assert.equal(retryDelayMs(0), 5_000);
+  assert.equal(retryDelayMs(1), 5_000);
+  assert.equal(retryDelayMs(2), 10_000);
+  assert.equal(retryDelayMs(10), 300_000);
+});
+
+test('safeJobError redacts credentials and bounds persisted error details', () => {
+  const message = safeJobError(new Error('Bearer test-token token=abc password=xyz postgresql://user:pass@db.example/app'));
+  assert.ok(!message.includes('test-token'));
+  assert.ok(!message.includes('abc'));
+  assert.ok(!message.includes('xyz'));
+  assert.ok(!message.includes('user:pass'));
+  assert.equal(safeJobError('x'.repeat(600)).length, 500);
 });
 

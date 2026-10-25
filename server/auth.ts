@@ -45,9 +45,20 @@ function passwordMatches(password: string, stored: string): boolean {
   return actual.length === expectedBuffer.length && crypto.timingSafeEqual(actual, expectedBuffer);
 }
 
+function sessionCookieAttributes(): string[] {
+  const preview = process.env.NODE_ENV === 'development';
+  const flags = [`SameSite=${preview ? 'None' : 'Lax'}`];
+  if (preview || process.env.NODE_ENV === 'production') flags.push('Secure');
+  return flags;
+}
+
 export function tokenCookie(res: Response, token: string, expires: Date): void {
-  const flags = [`${SESSION_COOKIE}=${token}`, `Expires=${expires.toUTCString()}`, 'Path=/', 'HttpOnly', 'SameSite=Lax'];
-  if (process.env.NODE_ENV === 'production') flags.push('Secure');
+  const flags = [`${SESSION_COOKIE}=${token}`, `Expires=${expires.toUTCString()}`, 'Path=/', 'HttpOnly', ...sessionCookieAttributes()];
+  res.setHeader('Set-Cookie', flags.join('; '));
+}
+
+export function clearTokenCookie(res: Response): void {
+  const flags = [`${SESSION_COOKIE}=`, 'Max-Age=0', 'Path=/', 'HttpOnly', ...sessionCookieAttributes()];
   res.setHeader('Set-Cookie', flags.join('; '));
 }
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import { fileURLToPath } from 'node:url';
 import { draftOutreachEmailWithAI, isAIProviderConfigured } from './ai.ts';
-import { authMiddleware, authSecretConfigured, currentSession, InvalidCredentialsError, login, logout, requestToken, register, tokenCookie, type AuthenticatedWorkspace } from './auth.ts';
+import { authMiddleware, authSecretConfigured, clearTokenCookie, currentSession, InvalidCredentialsError, login, logout, requestToken, register, tokenCookie, type AuthenticatedWorkspace } from './auth.ts';
 import { connectorRegistry } from './connectors/index.ts';
 import { databaseConfigured, query } from './db.ts';
 import { domainStore, WorkspaceRecordNotFound, type WorkspaceActor } from './domain-store.ts';
@@ -16,6 +16,7 @@ import type { Application, AppDiscoveryFilter, Campaign, Contact, Marketplace, O
 import { generateResearchReport } from './reports.ts';
 
 const app = express();
+app.set('trust proxy', 1);
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 const supportedMarketplaces = new Set<Marketplace>(['steam']);
 
@@ -76,6 +77,44 @@ function constantTimeEqual(received: string, expected: string): boolean {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+function normalizedOrigin(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return new URL(value.includes('://') ? value : `https://${value}`).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function trustedRequestOrigin(req: Request): boolean {
+  const requestOrigin = normalizedOrigin(req.header('origin'));
+  if (!requestOrigin) return !req.header('origin');
+
+  const allowedOrigins = new Set<string>();
+  const host = req.get('host');
+  if (host) {
+    const sameOrigin = normalizedOrigin(`${req.protocol}://${host}`);
+    if (sameOrigin) allowedOrigins.add(sameOrigin);
+  }
+
+  const development = process.env.NODE_ENV === 'development';
+  if (development) {
+    const port = Math.max(1, Math.min(65535, Number(process.env.PORT) || 3000));
+    allowedOrigins.add(`http://localhost:${port}`);
+    allowedOrigins.add(`http://127.0.0.1:${port}`);
+  }
+
+  const configuredOrigins = development
+    ? [process.env.V0_RUNTIME_URL, process.env.V0_DEV_APP_URL, process.env.V0_BUILD_URL, process.env.V0_SANDBOX_URL]
+    : [process.env.VERCEL_URL, process.env.VERCEL_PROJECT_PRODUCTION_URL];
+  for (const value of configuredOrigins) {
+    const origin = normalizedOrigin(value);
+    if (origin) allowedOrigins.add(origin);
+  }
+
+  return allowedOrigins.has(requestOrigin);
+}
+
 function configuredWorkerTriggerSecrets(): string[] {
   const secret = process.env.JOB_TRIGGER_SECRET;
   return secret && Buffer.byteLength(secret) >= 32 ? [secret] : [];
@@ -103,6 +142,10 @@ app.use((_req, res, next) => {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   if (process.env.NODE_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=63072000');
   next();
+});
+app.use('/api', (req, res, next) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || trustedRequestOrigin(req)) return next();
+  res.status(403).json({ error: 'Request origin is not allowed' });
 });
 app.use((req, _res, next) => {
   if (req.path.startsWith('/api')) console.info(`[API] ${req.method} ${req.path}`);
@@ -180,8 +223,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
 
 app.post('/api/auth/logout', asyncRoute(async (req, res) => {
   if (requestToken(req) && databaseConfigured() && authSecretConfigured()) await logout(requestToken(req));
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-  res.setHeader('Set-Cookie', `apppulse_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax${secure}`);
+  clearTokenCookie(res);
   res.status(204).end();
 }));
 
