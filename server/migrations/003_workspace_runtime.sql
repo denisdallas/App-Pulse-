@@ -7,32 +7,29 @@ ALTER TABLE reviews DROP CONSTRAINT IF EXISTS reviews_application_id_fkey;
 ALTER TABLE collection_jobs DROP CONSTRAINT IF EXISTS collection_jobs_application_id_fkey;
 ALTER TABLE reports DROP CONSTRAINT IF EXISTS reports_project_id_fkey;
 
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'applications_workspace_id_id_pk') THEN
-    ALTER TABLE applications DROP CONSTRAINT IF EXISTS applications_pkey;
-    ALTER TABLE applications ADD CONSTRAINT applications_workspace_id_id_pk PRIMARY KEY (workspace_id, id);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'reviews_workspace_id_id_pk') THEN
-    ALTER TABLE reviews DROP CONSTRAINT IF EXISTS reviews_pkey;
-    ALTER TABLE reviews ADD CONSTRAINT reviews_workspace_id_id_pk PRIMARY KEY (workspace_id, id);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'research_projects_workspace_id_id_pk') THEN
-    ALTER TABLE research_projects DROP CONSTRAINT IF EXISTS research_projects_pkey;
-    ALTER TABLE research_projects ADD CONSTRAINT research_projects_workspace_id_id_pk PRIMARY KEY (workspace_id, id);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'collection_jobs_workspace_id_id_pk') THEN
-    ALTER TABLE collection_jobs DROP CONSTRAINT IF EXISTS collection_jobs_pkey;
-    ALTER TABLE collection_jobs ADD CONSTRAINT collection_jobs_workspace_id_id_pk PRIMARY KEY (workspace_id, id);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'reports_workspace_id_id_pk') THEN
-    ALTER TABLE reports DROP CONSTRAINT IF EXISTS reports_pkey;
-    ALTER TABLE reports ADD CONSTRAINT reports_workspace_id_id_pk PRIMARY KEY (workspace_id, id);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'opportunities_workspace_id_id_pk') THEN
-    ALTER TABLE opportunities DROP CONSTRAINT IF EXISTS opportunities_pkey;
-    ALTER TABLE opportunities ADD CONSTRAINT opportunities_workspace_id_id_pk PRIMARY KEY (workspace_id, id);
-  END IF;
-END $$;
+ALTER TABLE applications DROP CONSTRAINT IF EXISTS applications_pkey;
+ALTER TABLE applications DROP CONSTRAINT IF EXISTS applications_workspace_id_id_pk;
+ALTER TABLE applications ADD CONSTRAINT applications_workspace_id_id_pk PRIMARY KEY (workspace_id, id);
+
+ALTER TABLE reviews DROP CONSTRAINT IF EXISTS reviews_pkey;
+ALTER TABLE reviews DROP CONSTRAINT IF EXISTS reviews_workspace_id_id_pk;
+ALTER TABLE reviews ADD CONSTRAINT reviews_workspace_id_id_pk PRIMARY KEY (workspace_id, id);
+
+ALTER TABLE research_projects DROP CONSTRAINT IF EXISTS research_projects_pkey;
+ALTER TABLE research_projects DROP CONSTRAINT IF EXISTS research_projects_workspace_id_id_pk;
+ALTER TABLE research_projects ADD CONSTRAINT research_projects_workspace_id_id_pk PRIMARY KEY (workspace_id, id);
+
+ALTER TABLE collection_jobs DROP CONSTRAINT IF EXISTS collection_jobs_pkey;
+ALTER TABLE collection_jobs DROP CONSTRAINT IF EXISTS collection_jobs_workspace_id_id_pk;
+ALTER TABLE collection_jobs ADD CONSTRAINT collection_jobs_workspace_id_id_pk PRIMARY KEY (workspace_id, id);
+
+ALTER TABLE reports DROP CONSTRAINT IF EXISTS reports_pkey;
+ALTER TABLE reports DROP CONSTRAINT IF EXISTS reports_workspace_id_id_pk;
+ALTER TABLE reports ADD CONSTRAINT reports_workspace_id_id_pk PRIMARY KEY (workspace_id, id);
+
+ALTER TABLE opportunities DROP CONSTRAINT IF EXISTS opportunities_pkey;
+ALTER TABLE opportunities DROP CONSTRAINT IF EXISTS opportunities_workspace_id_id_pk;
+ALTER TABLE opportunities ADD CONSTRAINT opportunities_workspace_id_id_pk PRIMARY KEY (workspace_id, id);
 
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE reviews ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb;
@@ -40,20 +37,17 @@ ALTER TABLE research_projects ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DE
 ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
 
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'reviews_workspace_application_fk') THEN
-    ALTER TABLE reviews ADD CONSTRAINT reviews_workspace_application_fk
-      FOREIGN KEY (workspace_id, application_id) REFERENCES applications(workspace_id, id) ON DELETE CASCADE;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'collection_jobs_workspace_application_fk') THEN
-    ALTER TABLE collection_jobs ADD CONSTRAINT collection_jobs_workspace_application_fk
-      FOREIGN KEY (workspace_id, application_id) REFERENCES applications(workspace_id, id) ON DELETE CASCADE;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'reports_workspace_project_fk') THEN
-    ALTER TABLE reports ADD CONSTRAINT reports_workspace_project_fk
-      FOREIGN KEY (workspace_id, project_id) REFERENCES research_projects(workspace_id, id) ON DELETE CASCADE;
-  END IF;
-END $$;
+ALTER TABLE reviews DROP CONSTRAINT IF EXISTS reviews_workspace_application_fk;
+ALTER TABLE reviews ADD CONSTRAINT reviews_workspace_application_fk
+  FOREIGN KEY (workspace_id, application_id) REFERENCES applications(workspace_id, id) ON DELETE CASCADE;
+
+ALTER TABLE collection_jobs DROP CONSTRAINT IF EXISTS collection_jobs_workspace_application_fk;
+ALTER TABLE collection_jobs ADD CONSTRAINT collection_jobs_workspace_application_fk
+  FOREIGN KEY (workspace_id, application_id) REFERENCES applications(workspace_id, id) ON DELETE CASCADE;
+
+ALTER TABLE reports DROP CONSTRAINT IF EXISTS reports_workspace_project_fk;
+ALTER TABLE reports ADD CONSTRAINT reports_workspace_project_fk
+  FOREIGN KEY (workspace_id, project_id) REFERENCES research_projects(workspace_id, id) ON DELETE CASCADE;
 
 CREATE INDEX IF NOT EXISTS applications_workspace_marketplace_idx ON applications(workspace_id, marketplace);
 CREATE INDEX IF NOT EXISTS reviews_workspace_marketplace_date_idx ON reviews(workspace_id, marketplace, review_date DESC);
