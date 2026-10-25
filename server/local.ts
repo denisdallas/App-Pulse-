@@ -6,7 +6,7 @@ import express from 'express';
 
 dotenv.config({ path: ['.env.development.local', '.env.local', '.env'] });
 
-const [{ app }, { authSecretConfigured }, { closeDatabase, databaseConfigured, query }, { getMigrationStatus, migrate }] = await Promise.all([
+const [{ app }, { authSecretConfigured }, { closeDatabase, databaseConfigured, query }, { getMigrationStatus }] = await Promise.all([
   import('./app.ts'),
   import('./auth.ts'),
   import('./db.ts'),
@@ -24,13 +24,21 @@ async function startServer(): Promise<void> {
   if (!databaseConfigured()) {
     if (isProduction) throw new Error('DATABASE_URL must be configured in production; JSON and memory persistence are not used.');
     console.warn('[AppPulse Server] DATABASE_URL is not configured. Static UI will be served, but authenticated APIs will remain not ready.');
+  } else if (!authSecretConfigured()) {
+    if (isProduction) throw new Error('AUTH_SESSION_SECRET must be at least 32 bytes when DATABASE_URL is configured.');
+    console.warn('[AppPulse Server] AUTH_SESSION_SECRET is not configured; authenticated APIs will remain not ready.');
   } else {
-    if (!authSecretConfigured()) throw new Error('AUTH_SESSION_SECRET must be at least 32 bytes when DATABASE_URL is configured.');
-    await migrate();
-    await query('SELECT 1');
-    const migrationStatus = await getMigrationStatus();
-    if (!migrationStatus.current) throw new Error('PostgreSQL migrations are incomplete; run the configured migration command before starting.');
-    console.info(`[AppPulse Server] PostgreSQL is reachable; ${migrationStatus.applied.length} migrations are current.`);
+    try {
+      await query('SELECT 1');
+      const migrationStatus = await getMigrationStatus();
+      if (!migrationStatus.current) {
+        console.warn(`[AppPulse Server] PostgreSQL is reachable; pending migrations: ${migrationStatus.pending.join(', ')}. Apply them explicitly before using authenticated APIs.`);
+      } else {
+        console.info(`[AppPulse Server] PostgreSQL is reachable; ${migrationStatus.applied.length} migrations are current.`);
+      }
+    } catch {
+      console.warn('[AppPulse Server] PostgreSQL health check failed; API readiness remains not ready.');
+    }
   }
 
   if (!fs.existsSync(indexFile)) throw new Error('Built frontend is missing. Run the build command before starting the static server.');

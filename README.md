@@ -8,9 +8,9 @@ AppPulse serves a built Vite frontend and an Express API. The preview and produc
 2. Configure `DATABASE_URL` with the Neon pooled PostgreSQL URL for application traffic. Configure `DATABASE_URL_UNPOOLED` with the direct, non-pooled URL for schema migrations.
 3. Set `AUTH_SESSION_SECRET` to a unique random value of at least 32 bytes. For example, generate one locally with `openssl rand -base64 32`. Never commit the value.
 4. Choose a job execution mode as described below.
-5. Run `bun run dev`. When a database URL is configured, startup applies pending migrations and checks database readiness. `bun run db:status` reports migration status; `bun run db:migrate` runs migrations directly.
+5. Apply migrations explicitly with `bun run db:migrate` only after confirming the target is a development database, then run `bun run dev`. Startup performs read-only connectivity and migration-status checks; it never applies schema changes implicitly. `bun run db:status` reports migration status.
 
-The Neon integration should provide `DATABASE_URL` and, when available, `DATABASE_URL_UNPOOLED` to the v0 project and Vercel environments. Configure `AUTH_SESSION_SECRET` and any optional provider settings in the project environment variables, not in source control. For local development, use `.env.local` or `.env.development.local`.
+The Neon integration provides `DATABASE_URL` and `DATABASE_URL_UNPOOLED` to the v0 project and Vercel environments. Configure `AUTH_SESSION_SECRET` and any optional provider settings in the project environment variables, not in source control. For local development, use `.env.local` or `.env.development.local`. Apply production schema changes through the approved Neon migration workflow; do not run the local migration command against production without reviewing and approving the target.
 
 ## Runtime environment
 
