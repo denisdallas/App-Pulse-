@@ -316,7 +316,7 @@ SET payload = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
   'marketplace', marketplace, 'text', COALESCE(body, ''), 'starRating', COALESCE(rating, 0),
   'reviewDate', COALESCE(review_date::text, ''), 'ratingScale', COALESCE(metadata->>'ratingScale', 'stars'), 'language', COALESCE(metadata->>'language', 'und'),
   'reviewUrl', COALESCE(source_url, ''), 'helpfulVotes', COALESCE((metadata->>'helpfulVotes')::integer, 0),
-  'collectedAt', COALESCE(collected_at::text, created_at::text), 'fingerprint', COALESCE(fingerprint, ''),
+  'collectedAt', collected_at::text, 'fingerprint', COALESCE(fingerprint, ''),
   'provenance', CASE provenance WHEN 'live' THEN 'live_marketplace' WHEN 'seed' THEN 'seed' WHEN 'imported' THEN 'imported' ELSE 'live_marketplace' END
 )
 WHERE payload = '{}'::jsonb;
