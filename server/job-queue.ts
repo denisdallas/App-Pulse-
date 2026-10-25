@@ -1,9 +1,9 @@
 import crypto from 'node:crypto';
-import type { PoolClient, QueryResultRow } from 'pg';
-import { query, transaction } from './db.ts';
+import type { QueryResultRow } from 'pg';
+import { query, transaction, type DatabaseClient } from './db.ts';
 import type { WorkspaceActor } from './domain-store.ts';
 
-export type JobType = 'collection' | 'analysis' | 'forecast' | 'opportunities' | 'export' | 'report';
+export type JobType = 'collection' | 'analysis' | 'forecast' | 'opportunities';
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface DurableJob extends QueryResultRow {
@@ -44,7 +44,7 @@ export interface JobView {
   completedAt: string | null;
 }
 
-const acceptedTypes = new Set<JobType>(['collection', 'analysis', 'forecast', 'opportunities', 'export', 'report']);
+const acceptedTypes = new Set<JobType>(['collection', 'analysis', 'forecast', 'opportunities']);
 const staleLeaseSeconds = Math.max(30, Math.min(900, Number(process.env.JOB_STALE_SECONDS) || 180));
 
 export function retryDelayMs(attempt: number): number {
@@ -82,7 +82,7 @@ export function toJobView(job: DurableJob): JobView {
   };
 }
 
-async function auditJob(client: PoolClient, actor: WorkspaceActor, action: string, jobId: string, details: Record<string, unknown> = {}): Promise<void> {
+async function auditJob(client: DatabaseClient, actor: WorkspaceActor, action: string, jobId: string, details: Record<string, unknown> = {}): Promise<void> {
   await client.query(
     `INSERT INTO audit_events(id,workspace_id,user_id,action,entity_type,entity_id,details)
      VALUES ($1,$2,$3,$4,'BackgroundJob',$5,$6::jsonb)`,
@@ -147,7 +147,7 @@ export async function cancelJob(actor: WorkspaceActor, id: string): Promise<'can
       [actor.workspaceId, id],
     );
     const job = rows.rows[0];
-    if (!job) return 'not_found';
+    if (!job || (job.requested_by !== actor.userId && actor.role !== 'owner')) return 'not_found';
     if (job.status === 'running') return 'running';
     if (job.status !== 'pending') return 'terminal';
     await client.query(
@@ -160,7 +160,7 @@ export async function cancelJob(actor: WorkspaceActor, id: string): Promise<'can
   });
 }
 
-async function recoverStaleJobs(client: PoolClient): Promise<void> {
+async function recoverStaleJobs(client: DatabaseClient): Promise<void> {
   await client.query(
     `UPDATE background_jobs
      SET status=CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
@@ -175,7 +175,7 @@ async function recoverStaleJobs(client: PoolClient): Promise<void> {
   );
 }
 
-async function touchWorker(client: PoolClient, workerId: string): Promise<void> {
+async function touchWorker(client: DatabaseClient, workerId: string): Promise<void> {
   await client.query(
     `INSERT INTO job_workers(id,last_seen_at,metadata) VALUES ($1,NOW(),$2::jsonb)
      ON CONFLICT (id) DO UPDATE SET last_seen_at=NOW(),metadata=EXCLUDED.metadata`,

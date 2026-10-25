@@ -189,7 +189,7 @@ export const ComplaintAnalyticsView: React.FC<ComplaintAnalyticsViewProps> = ({
             <div className="flex items-center gap-2">
               <Zap className="w-4 h-4 text-amber-400 shrink-0" />
               <span>
-                <strong>Future Opportunity Score Formulation:</strong> Weighted blend of Trend Velocity (35%), Severity Impact (30%), Incumbent Inertia / Slow Release Cadence (20%), and Market TAM Readiness (15%).
+                <strong>Future Opportunity Score:</strong> Weighted research heuristic using review-sample trend (35%), classified severity (30%), catalog update cadence (20%), and the number of applications linked to supporting reviews (15%). It does not estimate churn or market size.
               </span>
             </div>
             <span className="text-[11px] font-mono text-indigo-400 shrink-0">
@@ -230,16 +230,20 @@ export const ComplaintAnalyticsView: React.FC<ComplaintAnalyticsViewProps> = ({
                           <span aria-hidden="true" className="text-slate-400">·</span>
                           <span className="text-[11px] text-slate-400 flex items-center gap-1">
                             <Clock className="w-3 h-3 text-slate-400" />
-                            {forecast.forecastedWindowMonths}-Month Window
+                            {forecast.forecastedWindowMonths}-Month Validation Horizon
                           </span>
                           <span aria-hidden="true" className="text-slate-400">·</span>
                           <span className="text-[11px] text-rose-400 font-mono font-medium">
-                            {forecast.estimatedChurnRiskPct}% Churn Risk
+                            {forecast.riskBasis === 'negative_review_share_proxy' ? `${forecast.negativeReviewSharePct ?? 0}% negative in sample` : 'Rating coverage insufficient'}
                           </span>
                         </div>
                         <h3 className="text-sm font-semibold text-white">
                           {forecast.weaknessTitle}
                         </h3>
+                        <p className="text-[11px] text-slate-500">
+                          {forecast.negativeReviewCount ?? 0} negative of {forecast.ratingSampleCount ?? 0} rated reviews in the collected sample
+                          {forecast.coverageStartDate && forecast.coverageEndDate ? ` · ${forecast.coverageStartDate.slice(0, 10)} to ${forecast.coverageEndDate.slice(0, 10)}` : ''}
+                        </p>
                       </div>
 
                       {/* Future Opportunity Score Badge */}
@@ -283,7 +287,7 @@ export const ComplaintAnalyticsView: React.FC<ComplaintAnalyticsViewProps> = ({
 
                     {/* Competitors & Update Cadence */}
                     <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
-                      <span className="text-slate-400 font-medium">Vulnerable Competitors:</span>
+                      <span className="text-slate-400 font-medium">Evidence-linked applications:</span>
                       <div className="flex flex-wrap gap-1.5">
                         {forecast.competitorAppNames.map((name) => {
                           const matchedApp = apps.find((a) => a.name === name);
@@ -309,7 +313,7 @@ export const ComplaintAnalyticsView: React.FC<ComplaintAnalyticsViewProps> = ({
                       <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1">
                         <span className="font-semibold text-rose-400 flex items-center gap-1 text-[11px]">
                           <AlertTriangle className="w-3 h-3" />
-                          Escalating Root Cause & Compounding Friction:
+                          Review interpretation / unverified cause:
                         </span>
                         <p className="text-slate-300 leading-relaxed text-[11px]">
                           {forecast.rootCauseTrend}
@@ -319,7 +323,7 @@ export const ComplaintAnalyticsView: React.FC<ComplaintAnalyticsViewProps> = ({
                       <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1">
                         <span className="font-semibold text-indigo-400 flex items-center gap-1 text-[11px]">
                           <Target className="w-3 h-3" />
-                          Market Gap & Disillusioned Segment:
+                          Potential gap to validate:
                         </span>
                         <p className="text-slate-300 leading-relaxed text-[11px]">
                           {forecast.marketGapSummary}
@@ -343,7 +347,7 @@ export const ComplaintAnalyticsView: React.FC<ComplaintAnalyticsViewProps> = ({
                     {/* Score Breakdown Bars */}
                     <div className="p-3.5 rounded-lg bg-slate-800/50 border border-slate-800 space-y-2">
                       <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                        Future Opportunity Score Dimensions
+                        Research Heuristic Score Dimensions
                       </span>
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                         <div>
@@ -387,13 +391,13 @@ export const ComplaintAnalyticsView: React.FC<ComplaintAnalyticsViewProps> = ({
 
                         <div>
                           <div className="flex justify-between text-[11px] text-slate-300 mb-1">
-                            <span>TAM Readiness (15%)</span>
-                            <span className="font-mono text-emerald-400">{forecast.scoreBreakdown.marketTAMReadinessScore}</span>
+                            <span>Evidence Breadth (15%)</span>
+                            <span className="font-mono text-emerald-400">{forecast.scoreBreakdown.evidenceBreadthScore}</span>
                           </div>
                           <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
                             <div
                               className="h-full bg-emerald-500 rounded-full"
-                              style={{ width: `${forecast.scoreBreakdown.marketTAMReadinessScore}%` }}
+                              style={{ width: `${forecast.scoreBreakdown.evidenceBreadthScore}%` }}
                             />
                           </div>
                         </div>
@@ -405,7 +409,7 @@ export const ComplaintAnalyticsView: React.FC<ComplaintAnalyticsViewProps> = ({
                       <div className="p-3 rounded-lg bg-slate-800/40 border border-slate-800 space-y-1.5">
                         <div className="flex items-center gap-1 text-[11px] text-slate-400 font-medium">
                           <Quote className="w-3 h-3 text-indigo-400" />
-                          <span>Verbatim User Feedback Leading the Trajectory:</span>
+                          <span>Verbatim excerpts from supporting reviews:</span>
                         </div>
                         <div className="space-y-1 pl-2 border-l-2 border-indigo-500/40">
                           {forecast.evidenceReviewQuotes.map((q, idx) => (

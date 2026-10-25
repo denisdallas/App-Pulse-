@@ -60,7 +60,7 @@ export interface PredictedWeakness {
   category: ComplaintCategory;
   rootCauseTrend: string;
   forecastedWindowMonths: number; // e.g. 3, 6, 12 months
-  estimatedChurnRiskPct: number; // e.g. 24%
+  negativeReviewSharePct?: number;
   marketGapSummary: string;
   suggestedWedgeFeature: string;
   futureOpportunityScore: number; // 0 - 100
@@ -68,11 +68,15 @@ export interface PredictedWeakness {
     trendVelocityScore: number;     // 35%: rate of complaint escalation
     severityImpactScore: number;    // 30%: operational disruption severity
     incumbentInertiaScore: number;  // 20%: sluggishness of competitor release cycle
-    marketTAMReadinessScore: number;// 15%: willingness of market segment to switch
+    evidenceBreadthScore: number;// 15%: willingness of market segment to switch
   };
   evidenceReviewQuotes: string[];
   supportingReviewIds?: string[];
-  riskBasis?: 'model_estimate_from_review_evidence' | 'negative_review_share_proxy';
+  ratingSampleCount?: number;
+  negativeReviewCount?: number;
+  coverageStartDate?: string;
+  coverageEndDate?: string;
+  riskBasis?: 'negative_review_share_proxy' | 'insufficient_rating_coverage';
   validationMilestones: string[];
   status: 'forecasted' | 'validated' | 'promoted_to_opportunity';
   createdAt: string;
@@ -101,7 +105,7 @@ export interface ReviewClassification {
   isPricingIssue: boolean;
 }
 
-export type DataProvenance = 'seed' | 'live_marketplace' | 'ai_generated' | 'calculated';
+export type DataProvenance = 'seed' | 'imported' | 'live_marketplace' | 'ai_generated' | 'calculated';
 
 export interface Review {
   id: string; // source review identifier or composite
@@ -183,7 +187,7 @@ export interface CollectionJob {
   appName: string;
   marketplace: Marketplace;
   status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
-  jobType?: 'collection' | 'analysis' | 'forecast' | 'opportunities' | 'export' | 'report';
+  jobType?: 'collection' | 'analysis' | 'forecast' | 'opportunities';
   attempts?: number;
   maxAttempts?: number;
   outcome?: 'collected' | 'empty' | 'unsupported' | 'failed';

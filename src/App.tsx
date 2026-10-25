@@ -27,6 +27,64 @@ import { ProjectsView } from './components/ProjectsView.tsx';
 import { SettingsView } from './components/SettingsView.tsx';
 import { AuthView } from './components/AuthView.tsx';
 
+type JobSnapshot = {
+  id: string;
+  type: string;
+  status: CollectionJob['status'];
+  progress: number;
+  attempts: number;
+  maxAttempts: number;
+  input: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, { ...init, credentials: init?.credentials ?? 'same-origin' });
+  const responseText = await response.text();
+  let body: unknown = null;
+  try {
+    body = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    body = null;
+  }
+  if (!response.ok) {
+    const message = typeof body === 'object' && body !== null && 'error' in body && typeof body.error === 'string'
+      ? body.error
+      : `Request failed (${response.status})`;
+    throw new Error(message);
+  }
+  return body as T;
+}
+
+function toCollectionJob(job: JobSnapshot): CollectionJob {
+  const result = job.result || {};
+  const input = job.input || {};
+  const appName = typeof input.appName === 'string' ? input.appName : typeof result.appName === 'string' ? result.appName : `${job.type[0]?.toUpperCase() || ''}${job.type.slice(1)} job`;
+  const outcome = typeof result.outcome === 'string' && ['collected', 'empty', 'unsupported', 'failed'].includes(result.outcome)
+    ? result.outcome as CollectionJob['outcome']
+    : undefined;
+  return {
+    id: job.id,
+    appId: typeof input.appId === 'string' ? input.appId : '',
+    appName,
+    marketplace: (typeof input.marketplace === 'string' ? input.marketplace : typeof result.marketplace === 'string' ? result.marketplace : 'steam') as Marketplace,
+    status: job.status,
+    jobType: job.type as CollectionJob['jobType'],
+    attempts: job.attempts,
+    maxAttempts: job.maxAttempts,
+    outcome,
+    progress: job.progress,
+    collectedCount: typeof result.collectedCount === 'number' ? result.collectedCount : 0,
+    deduplicatedCount: typeof result.deduplicatedCount === 'number' ? result.deduplicatedCount : 0,
+    error: job.error || undefined,
+    startedAt: job.startedAt || '',
+    completedAt: job.completedAt || undefined,
+  };
+}
+
 export default function App() {
   const [currentTab, setCurrentTab] = useState<ViewTab>('dashboard');
   const [authState, setAuthState] = useState<'loading' | 'authenticated' | 'unauthenticated'>('loading');
@@ -77,19 +135,19 @@ export default function App() {
         logsRes,
         settingsRes,
       ] = await Promise.all([
-        fetch('/api/stats').then((r) => r.json()),
-        fetch('/api/apps').then((r) => r.json()),
-        fetch('/api/reviews?limit=200').then((r) => r.json()),
-        fetch('/api/themes').then((r) => r.json()),
-        fetch('/api/forecasts').then((r) => r.json()),
-        fetch('/api/opportunities').then((r) => r.json()),
-        fetch('/api/contacts').then((r) => r.json()),
-        fetch('/api/campaigns').then((r) => r.json()),
-        fetch('/api/suppression').then((r) => r.json()),
-        fetch('/api/projects').then((r) => r.json()),
-        fetch('/api/jobs').then((r) => r.json()),
-        fetch('/api/audit-logs').then((r) => r.json()),
-        fetch('/api/settings').then((r) => r.json()),
+        requestJson<SystemStats>('/api/stats'),
+        requestJson<Application[]>('/api/apps'),
+        requestJson<{ reviews: Review[] }>('/api/reviews?limit=200'),
+        requestJson<ComplaintTheme[]>('/api/themes'),
+        requestJson<PredictedWeakness[]>('/api/forecasts'),
+        requestJson<Opportunity[]>('/api/opportunities'),
+        requestJson<Contact[]>('/api/contacts'),
+        requestJson<Campaign[]>('/api/campaigns'),
+        requestJson<SuppressionRecord[]>('/api/suppression'),
+        requestJson<ResearchProject[]>('/api/projects'),
+        requestJson<CollectionJob[]>('/api/jobs'),
+        requestJson<AuditLog[]>('/api/audit-logs'),
+        requestJson<Record<string, unknown>>('/api/settings'),
       ]);
 
       setStats(statsRes);
@@ -108,6 +166,40 @@ export default function App() {
     } catch (err) {
       console.error('[App] Failed to load data:', err);
     }
+  };
+
+  const upsertJob = (snapshot: JobSnapshot) => {
+    const mapped = toCollectionJob(snapshot);
+    setJobs((current) => [mapped, ...current.filter((job) => job.id !== mapped.id)].slice(0, 100));
+  };
+
+  const watchJob = async (jobId: string, label: string) => {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        const job = await requestJson<JobSnapshot>(`/api/jobs/${encodeURIComponent(jobId)}`);
+        upsertJob(job);
+        if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+          await loadAllData();
+          if (job.status !== 'completed') {
+            showToast(`${label} ${job.status}: ${job.error || 'No additional details available.'}`);
+          } else if (job.result?.outcome === 'empty') {
+            showToast(`${label} completed; the source returned no reviews.`);
+          } else if (typeof job.result?.count === 'number') {
+            showToast(`${label} completed with ${job.result.count} result${job.result.count === 1 ? '' : 's'}.`);
+          } else if (typeof job.result?.collectedCount === 'number') {
+            showToast(`Collection completed: ${job.result.collectedCount} new reviews, ${Number(job.result.deduplicatedCount || 0)} duplicates.`);
+          } else {
+            showToast(`${label} completed.`);
+          }
+          return;
+        }
+      } catch (error) {
+        showToast(`${label} status could not be refreshed: ${error instanceof Error ? error.message : 'Request failed'}`);
+        return;
+      }
+    }
+    showToast(`${label} is still queued or running. Check recent job activity for its current status.`);
   };
 
   useEffect(() => {
@@ -158,32 +250,31 @@ export default function App() {
 
   const handleTriggerCollect = async (appId: string) => {
     try {
-      const res = await fetch('/api/apps/collect', {
+      const data = await requestJson<{ job: JobSnapshot }>('/api/apps/collect', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ appId, negativeOnly: true }),
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+        body: JSON.stringify({ appId, negativeOnly: false }),
       });
-      const data = await res.json();
-      showToast('Collection job queued! Processing negative reviews...');
-      setTimeout(loadAllData, 2000);
-    } catch (err: any) {
-      showToast(`Collection error: ${err.message}`);
+      upsertJob(data.job);
+      showToast('Review collection queued; the dashboard will track its actual result.');
+      await watchJob(data.job.id, 'Review collection');
+    } catch (error) {
+      showToast(`Collection error: ${error instanceof Error ? error.message : 'Request failed'}`);
     }
   };
 
   const handleSearchOnline = async (query: string, marketplace: Marketplace) => {
     setIsSearchingOnline(true);
     try {
-      const res = await fetch('/api/apps/search-online', {
+      const data = await requestJson<{ count: number }>('/api/apps/search-online', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, marketplace }),
       });
-      const data = await res.json();
-      showToast(`Discovered ${data.count} live apps on ${marketplace}!`);
-      loadAllData();
-    } catch (err: any) {
-      showToast(`Search error: ${err.message}`);
+      showToast(`Saved ${data.count} applications returned by ${marketplace}.`);
+      await loadAllData();
+    } catch (error) {
+      showToast(`Search error: ${error instanceof Error ? error.message : 'Request failed'}`);
     } finally {
       setIsSearchingOnline(false);
     }
@@ -192,17 +283,17 @@ export default function App() {
   const handleRunAIAnalysis = async () => {
     setIsAnalyzing(true);
     try {
-      const res = await fetch('/api/analyze', {
+      const data = await requestJson<{ job: JobSnapshot }>('/api/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({}),
       });
-      const data = await res.json();
-      showToast(`AI analysis complete: ${data.count} recurring themes clustered.`);
-      loadAllData();
+      upsertJob(data.job);
       setCurrentTab('analytics');
-    } catch (err: any) {
-      showToast(`AI Analysis error: ${err.message}`);
+      showToast('Evidence analysis queued; waiting for the worker result.');
+      await watchJob(data.job.id, 'Evidence analysis');
+    } catch (error) {
+      showToast(`Analysis error: ${error instanceof Error ? error.message : 'Request failed'}`);
     } finally {
       setIsAnalyzing(false);
     }
@@ -211,16 +302,16 @@ export default function App() {
   const handleRunForecasts = async () => {
     setIsForecasting(true);
     try {
-      const res = await fetch('/api/forecasts/generate', {
+      const data = await requestJson<{ job: JobSnapshot }>('/api/forecasts/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
       });
-      const data = await res.json();
-      showToast(`Predicted ${data.count} forward-looking competitor weaknesses with Future Opportunity Scores.`);
-      loadAllData();
+      upsertJob(data.job);
       setCurrentTab('analytics');
-    } catch (err: any) {
-      showToast(`Forecast error: ${err.message}`);
+      showToast('Evidence-based forecast queued; waiting for the worker result.');
+      await watchJob(data.job.id, 'Forecast generation');
+    } catch (error) {
+      showToast(`Forecast error: ${error instanceof Error ? error.message : 'Request failed'}`);
     } finally {
       setIsForecasting(false);
     }
@@ -228,14 +319,13 @@ export default function App() {
 
   const handlePromoteForecast = async (forecastId: string) => {
     try {
-      const res = await fetch(`/api/forecasts/${forecastId}/promote`, {
+      const data = await requestJson<{ success: boolean; opportunity: Opportunity }>(`/api/forecasts/${encodeURIComponent(forecastId)}/promote`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
-      const data = await res.json();
       if (data.success) {
         showToast(`Forecast promoted to Opportunity: "${data.opportunity.title}"`);
-        loadAllData();
+        await loadAllData();
       }
     } catch (err: any) {
       showToast(`Error promoting forecast: ${err.message}`);
@@ -245,17 +335,17 @@ export default function App() {
   const handleGenerateOpportunities = async () => {
     setIsGeneratingOpps(true);
     try {
-      const res = await fetch('/api/opportunities/generate', {
+      const data = await requestJson<{ job: JobSnapshot }>('/api/opportunities/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({}),
       });
-      const data = await res.json();
-      showToast(`Generated ${data.count} scored opportunities.`);
-      loadAllData();
+      upsertJob(data.job);
       setCurrentTab('opportunities');
-    } catch (err: any) {
-      showToast(`Opportunity generation error: ${err.message}`);
+      showToast('Evidence-backed opportunity generation queued.');
+      await watchJob(data.job.id, 'Opportunity generation');
+    } catch (error) {
+      showToast(`Opportunity generation error: ${error instanceof Error ? error.message : 'Request failed'}`);
     } finally {
       setIsGeneratingOpps(false);
     }
@@ -263,7 +353,7 @@ export default function App() {
 
   const handleUpdateReview = async (reviewId: string, updates: Partial<Review>) => {
     try {
-      await fetch(`/api/reviews/${reviewId}/tag`, {
+      await requestJson<Review>(`/api/reviews/${encodeURIComponent(reviewId)}/tag`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
@@ -279,13 +369,12 @@ export default function App() {
 
   const handleSaveOpportunity = async (opp: Opportunity) => {
     try {
-      const res = await fetch('/api/opportunities', {
+      const saved = await requestJson<Opportunity>('/api/opportunities', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(opp),
       });
-      const saved = await res.json();
-      loadAllData();
+      await loadAllData();
       showToast(`Opportunity "${saved.title}" saved.`);
     } catch (err: any) {
       showToast(`Error saving opportunity: ${err.message}`);
@@ -294,7 +383,7 @@ export default function App() {
 
   const handleDeleteOpportunity = async (id: string) => {
     try {
-      await fetch(`/api/opportunities/${id}`, { method: 'DELETE' });
+      await requestJson<{ success: boolean }>(`/api/opportunities/${encodeURIComponent(id)}`, { method: 'DELETE' });
       setOpportunities((prev) => prev.filter((o) => o.id !== id));
       showToast('Opportunity removed.');
     } catch (err: any) {
@@ -304,12 +393,12 @@ export default function App() {
 
   const handleSaveContact = async (contact: Contact) => {
     try {
-      await fetch('/api/contacts', {
+      await requestJson<Contact>('/api/contacts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(contact),
       });
-      loadAllData();
+      await loadAllData();
       showToast(`Contact "${contact.name}" saved.`);
     } catch (err: any) {
       showToast(`Error: ${err.message}`);
@@ -318,7 +407,7 @@ export default function App() {
 
   const handleDeleteContact = async (id: string) => {
     try {
-      await fetch(`/api/contacts/${id}`, { method: 'DELETE' });
+      await requestJson<{ success: boolean }>(`/api/contacts/${encodeURIComponent(id)}`, { method: 'DELETE' });
       setContacts((prev) => prev.filter((c) => c.id !== id));
       showToast('Contact deleted.');
     } catch (err: any) {
@@ -328,14 +417,13 @@ export default function App() {
 
   const handleImportCsv = async (csvContent: string) => {
     try {
-      const res = await fetch('/api/contacts/import-csv', {
+      const data = await requestJson<{ imported: number }>('/api/contacts/import-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ csvContent }),
       });
-      const data = await res.json();
       showToast(`Imported ${data.imported} contacts from CSV.`);
-      loadAllData();
+      await loadAllData();
     } catch (err: any) {
       showToast(`Import error: ${err.message}`);
     }
@@ -343,12 +431,12 @@ export default function App() {
 
   const handleAddSuppression = async (emailOrDomain: string, reason: SuppressionRecord['reason'] = 'manual_suppression') => {
     try {
-      await fetch('/api/suppression', {
+      await requestJson<SuppressionRecord>('/api/suppression', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ emailOrDomain, reason }),
       });
-      loadAllData();
+      await loadAllData();
       showToast(`Added ${emailOrDomain} to suppression list.`);
     } catch (err: any) {
       showToast(`Error: ${err.message}`);
@@ -357,7 +445,7 @@ export default function App() {
 
   const handleRemoveSuppression = async (id: string) => {
     try {
-      await fetch(`/api/suppression/${id}`, { method: 'DELETE' });
+      await requestJson<{ success: boolean }>(`/api/suppression/${encodeURIComponent(id)}`, { method: 'DELETE' });
       setSuppression((prev) => prev.filter((s) => s.id !== id));
       showToast('Suppression rule removed.');
     } catch (err: any) {
@@ -367,12 +455,12 @@ export default function App() {
 
   const handleCreateCampaign = async (campaign: Campaign) => {
     try {
-      await fetch('/api/campaigns', {
+      await requestJson<Campaign>('/api/campaigns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(campaign),
       });
-      loadAllData();
+      await loadAllData();
       showToast(`Campaign "${campaign.name}" created.`);
     } catch (err: any) {
       showToast(`Error creating campaign: ${err.message}`);
@@ -380,9 +468,9 @@ export default function App() {
   };
 
   const handleSendCampaign = async (campaignId: string) => {
-    const res = await fetch(`/api/campaigns/${campaignId}/send`, { method: 'POST' });
-    const data = await res.json();
-    loadAllData();
+    const data = await requestJson<{ success: boolean; status: string; sent: number; blocked: number; reasons: string[] }>(`/api/campaigns/${encodeURIComponent(campaignId)}/send`, { method: 'POST' });
+    await loadAllData();
+    if (!data.success) showToast(data.reasons[0] || 'No messages were sent; no delivery adapter is implemented.');
     return data;
   };
 
@@ -393,31 +481,45 @@ export default function App() {
     objective: string;
     tone: string;
   }) => {
-    const res = await fetch('/api/outreach/draft', {
+    return requestJson<{ subject: string; body: string }>('/api/outreach/draft', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     });
-    return res.json();
   };
 
   const handleSaveProject = async (proj: ResearchProject) => {
     try {
-      await fetch('/api/projects', {
+      await requestJson<ResearchProject>('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(proj),
       });
-      loadAllData();
+      await loadAllData();
       showToast(`Research project "${proj.name}" updated.`);
     } catch (err: any) {
       showToast(`Error: ${err.message}`);
     }
   };
 
-  const handleExport = (type: 'reviews' | 'opportunities' | 'contacts', format: 'csv' | 'json' = 'csv') => {
-    window.location.href = `/api/export?type=${type}&format=${format}`;
-    showToast(`Downloading ${type} as ${format.toUpperCase()}...`);
+  const handleExport = async (type: 'reviews' | 'opportunities' | 'contacts', format: 'csv' | 'json' = 'csv') => {
+    try {
+      const response = await fetch(`/api/export?type=${encodeURIComponent(type)}&format=${encodeURIComponent(format)}`, { credentials: 'same-origin' });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(typeof body.error === 'string' ? body.error : `Export failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = `apppulse_${type}.${format}`;
+      link.click();
+      URL.revokeObjectURL(objectUrl);
+      showToast(`${type} export downloaded.`);
+    } catch (error) {
+      showToast(`Export error: ${error instanceof Error ? error.message : 'Request failed'}`);
+    }
   };
 
   return (

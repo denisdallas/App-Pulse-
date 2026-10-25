@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getMigrationPool, getPool, databaseConfigured } from './db.ts';
+import { getMigrationPool, databaseConfigured, query } from './db.ts';
 
 const migrationDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), 'migrations');
 const lockId = 731846029;
@@ -48,10 +48,10 @@ export async function getMigrationStatus(): Promise<{ applied: string[]; pending
   const files = (await migrationFiles()).map((file) => file.replace(/\.sql$/, ''));
   if (!databaseConfigured()) return { applied: [], pending: files, current: false };
 
-  const table = await getPool().query<{ exists: boolean }>("SELECT to_regclass('public.schema_migrations') IS NOT NULL AS exists");
-  if (!table.rows[0]?.exists) return { applied: [], pending: files, current: false };
-  const rows = await getPool().query<{ version: string }>('SELECT version FROM schema_migrations ORDER BY version');
-  const applied = rows.rows.map((row) => row.version);
+  const table = await query<{ exists: boolean }>("SELECT to_regclass('public.schema_migrations') IS NOT NULL AS exists");
+  if (!table[0]?.exists) return { applied: [], pending: files, current: false };
+  const rows = await query<{ version: string }>('SELECT version FROM schema_migrations ORDER BY version');
+  const applied = rows.map((row) => row.version);
   const appliedSet = new Set(applied);
   const pending = files.filter((version) => !appliedSet.has(version));
   return { applied, pending, current: pending.length === 0 };

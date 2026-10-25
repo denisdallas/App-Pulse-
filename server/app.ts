@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import { fileURLToPath } from 'node:url';
-import { analyzeComplaintsWithAI, draftOutreachEmailWithAI } from './ai.ts';
-import { authMiddleware, authSecretConfigured, currentSession, login, logout, requestToken, register, tokenCookie, type AuthenticatedWorkspace } from './auth.ts';
+import { draftOutreachEmailWithAI, isAIProviderConfigured } from './ai.ts';
+import { authMiddleware, authSecretConfigured, currentSession, InvalidCredentialsError, login, logout, requestToken, register, tokenCookie, type AuthenticatedWorkspace } from './auth.ts';
 import { connectorRegistry } from './connectors/index.ts';
 import { databaseConfigured, query } from './db.ts';
 import { domainStore, WorkspaceRecordNotFound, type WorkspaceActor } from './domain-store.ts';
@@ -167,8 +167,9 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
     const result = await login(String(req.body?.email || ''), String(req.body?.password || ''));
     tokenCookie(res, result.token, result.expires);
     res.json({ user: result.user, expiresAt: result.expires.toISOString() });
-  } catch {
-    throw new ApiError(401, 'Invalid email or password');
+  } catch (error) {
+    if (error instanceof InvalidCredentialsError) throw new ApiError(401, 'Invalid email or password');
+    throw error;
   }
 }));
 
@@ -211,8 +212,7 @@ app.get('/api/integrations/status', asyncRoute(async (_req, res) => {
       nextAction: supportsReviews ? 'Run a real, workspace-authorized collection job to verify review retrieval.' : 'No review collection capability is currently verified for this marketplace.',
     };
   }));
-  const aiConfigured = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY');
-  const mailConfigured = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+  const aiConfigured = isAIProviderConfigured();
   res.json({
     generatedAt: new Date().toISOString(),
     statuses: connectors,
@@ -284,7 +284,7 @@ app.post('/api/apps/search-online', ownerOnly, asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/jobs', asyncRoute(async (req, res) => {
-  const type = typeof req.query.type === 'string' && ['collection', 'analysis', 'forecast', 'opportunities', 'export', 'report'].includes(req.query.type)
+  const type = typeof req.query.type === 'string' && ['collection', 'analysis', 'forecast', 'opportunities'].includes(req.query.type)
     ? req.query.type as JobType
     : undefined;
   res.json((await listJobs(actorFrom(res), type)).map((job) => ({
@@ -315,6 +315,7 @@ app.post('/api/jobs/:id/cancel', ownerOnly, asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/internal/jobs/process', asyncRoute(async (req, res) => {
+  if (process.env.JOB_EXECUTION_MODE !== 'http_trigger') throw new ApiError(503, 'HTTP-triggered job execution is not enabled');
   const expected = process.env.JOB_TRIGGER_SECRET;
   const authorization = req.header('authorization') || '';
   const match = authorization.match(/^Bearer\s+(.+)$/i);
@@ -333,7 +334,7 @@ app.post('/api/apps/collect', ownerOnly, asyncRoute(async (req, res) => {
   const appId = requiredString(req.body?.appId, 'appId');
   const appItem = await domainStore.getAppById(actor, appId);
   if (!appItem) throw new WorkspaceRecordNotFound();
-  const job = await enqueueJob(actor, 'collection', { appId, appName: appItem.name, marketplace: appItem.marketplace, negativeOnly: req.body?.negativeOnly !== false }, safeJobKey(req.header('Idempotency-Key')));
+  const job = await enqueueJob(actor, 'collection', { appId, appName: appItem.name, marketplace: appItem.marketplace, negativeOnly: req.body?.negativeOnly === true }, safeJobKey(req.header('Idempotency-Key')));
   res.status(202).json({ job: { ...job, appId, appName: appItem.name, marketplace: appItem.marketplace }, message: 'Collection job queued for the configured worker.' });
 }));
 
@@ -457,7 +458,8 @@ app.delete('/api/contacts/:id', ownerOnly, asyncRoute(async (req, res) => {
 
 app.post('/api/contacts/import-csv', ownerOnly, asyncRoute(async (req, res) => {
   if (typeof req.body?.csvContent !== 'string' || !req.body.csvContent.trim()) throw new ApiError(400, 'csvContent is required');
-  const rows = parseCsv(req.body.csvContent).slice(0, 500);
+  const rows = parseCsv(req.body.csvContent);
+  if (rows.length > 500) throw new ApiError(400, 'Contact import is limited to 500 rows');
   const contacts: Contact[] = [];
   for (const row of rows) {
     const email = row.email || row.Email || row.contact_email;
@@ -507,8 +509,8 @@ app.post('/api/outreach/draft', asyncRoute(async (req, res) => {
   const opportunityId = requiredString(req.body?.opportunityId, 'opportunityId');
   const opportunity = await domainStore.getOpportunity(actor, opportunityId);
   if (!opportunity || !opportunity.supportingReviewIds.length) throw new ApiError(400, 'An opportunity with collected review evidence is required');
-  const validReviews = await domainStore.getReviews(actor, { limit: 500 });
-  if (opportunity.supportingReviewIds.some((id) => !validReviews.reviews.some((review) => review.id === id))) throw new WorkspaceRecordNotFound();
+  const validReviews = await domainStore.getAllReviews(actor, { limit: 25_000 });
+  if (opportunity.supportingReviewIds.some((id) => !validReviews.some((review) => review.id === id))) throw new WorkspaceRecordNotFound();
   let appItem: Application | undefined;
   if (req.body?.appId) {
     appItem = await domainStore.getAppById(actor, requiredString(req.body.appId, 'appId'));
@@ -554,8 +556,7 @@ app.get('/api/settings', asyncRoute(async (_req, res) => {
       return { marketplace: connector.marketplace, name: connector.displayName, configuration: 'unknown', connectivity: 'unavailable', capability: 'not_verified', latencyMs: null, lastSuccessfulRetrievalAt: null };
     }
   }));
-  const aiConfigured = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY');
-  const mailConfigured = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+  const aiConfigured = isAIProviderConfigured();
   res.json({
     workspaceName: actor.workspaceName,
     aiModel: 'gemini-3.8-flash',

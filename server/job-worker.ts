@@ -53,8 +53,7 @@ async function runCollection(job: DurableJob, actor: WorkspaceActor): Promise<Re
     };
   });
   await heartbeatJob(job, 70);
-  const saved = await domainStore.saveReviews(actor, incoming);
-  await domainStore.markAppCollected(actor, app.id);
+  const saved = await domainStore.saveCollectedReviews(actor, app.id, incoming);
   return {
     appId: app.id,
     appName: app.name,
@@ -76,18 +75,19 @@ async function workspaceInputs(job: DurableJob, actor: WorkspaceActor): Promise<
   const selectedApps = requestedIds.length ? apps.filter((app) => requestedIds.includes(app.id)) : apps;
   if (requestedIds.length && selectedApps.length !== requestedIds.length) throw new Error('One or more applications are unavailable in this workspace');
   const selectedIds = new Set(selectedApps.map((app) => app.id));
-  const reviewsResult = await domainStore.getReviews(actor, { negativeOnly: true, limit: 500, offset: 0 });
-  const reviews = reviewsResult.reviews.filter((review) => selectedIds.has(review.appId));
+  const reviews = (await domainStore.getAllReviews(actor, { limit: 25_000 }))
+    .filter((review) => selectedIds.has(review.appId) && review.provenance !== 'seed');
   return { apps: selectedApps, reviews };
 }
 
 async function runAnalysis(job: DurableJob, actor: WorkspaceActor): Promise<Record<string, unknown>> {
   const { apps, reviews } = await workspaceInputs(job, actor);
+  const negativeReviews = reviews.filter((review) => review.starRating <= 2);
   await heartbeatJob(job, 20);
-  const themes = annotateThemeEvidence(await analyzeComplaintsWithAI(reviews, apps), reviews);
+  const themes = annotateThemeEvidence(await analyzeComplaintsWithAI(negativeReviews, apps), negativeReviews);
   await heartbeatJob(job, 80);
   await domainStore.saveThemes(actor, themes);
-  return { count: themes.length, themes, evidenceReviewCount: reviews.length };
+  return { count: themes.length, themeIds: themes.map((theme) => theme.id), evidenceReviewCount: negativeReviews.length };
 }
 
 async function runForecast(job: DurableJob, actor: WorkspaceActor): Promise<Record<string, unknown>> {
@@ -98,22 +98,30 @@ async function runForecast(job: DurableJob, actor: WorkspaceActor): Promise<Reco
   const forecasts = await forecastFutureWeaknessesWithAI(reviews, apps, relevantThemes);
   await heartbeatJob(job, 80);
   await domainStore.saveForecasts(actor, forecasts);
-  return { count: forecasts.length, forecasts, evidenceReviewCount: reviews.length };
+  return {
+    count: forecasts.length,
+    forecasts: forecasts.map((forecast) => ({ id: forecast.id, weaknessTitle: forecast.weaknessTitle, futureOpportunityScore: forecast.futureOpportunityScore })),
+    evidenceReviewCount: reviews.length,
+  };
 }
 
 async function runOpportunities(job: DurableJob, actor: WorkspaceActor): Promise<Record<string, unknown>> {
-  const apps = await domainStore.getApps(actor);
+  const requestedIds = Array.isArray(job.input.appIds)
+    ? [...new Set(job.input.appIds.filter((id): id is string => typeof id === 'string').slice(0, 50))]
+    : [];
+  const allApps = await domainStore.getApps(actor);
+  const apps = requestedIds.length ? allApps.filter((app) => requestedIds.includes(app.id)) : allApps;
+  if (requestedIds.length && apps.length !== requestedIds.length) throw new Error('One or more applications are unavailable in this workspace');
+  const appIds = new Set(apps.map((app) => app.id));
   const themes = await domainStore.getThemes(actor);
-  const relevantThemes = themes.filter((theme) => theme.affectedApps.some((appId) => apps.some((app) => app.id === appId)));
+  const relevantThemes = themes.filter((theme) => theme.affectedApps.some((appId) => appIds.has(appId)) && theme.supportingReviewIds?.length);
   await heartbeatJob(job, 20);
   const opportunities = await generateOpportunitiesWithAI(relevantThemes, apps);
   await heartbeatJob(job, 80);
-  const saved: OpportunityResult[] = [];
-  for (const opportunity of opportunities) saved.push(await domainStore.saveOpportunity(actor, opportunity));
-  return { count: saved.length, opportunities: saved };
+  const saved = await domainStore.saveOpportunities(actor, opportunities);
+  return { count: saved.length, opportunityIds: saved.map((opportunity) => opportunity.id) };
 }
 
-type OpportunityResult = Awaited<ReturnType<typeof domainStore.saveOpportunity>>;
 
 export async function processNextJob(workerId: string): Promise<{ id: string; status: string } | null> {
   const job = await claimNextJob(workerId);
@@ -134,9 +142,6 @@ export async function processNextJob(workerId: string): Promise<{ id: string; st
       case 'opportunities':
         result = await runOpportunities(job, actor);
         break;
-      case 'export':
-      case 'report':
-        throw new Error('This job type has no configured executor');
       default:
         throw new Error('Unsupported persisted job type');
     }

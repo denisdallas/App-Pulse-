@@ -1,9 +1,16 @@
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { query, transaction } from './db.ts';
+import { query, transaction, type DatabaseClient } from './db.ts';
 
 const SESSION_COOKIE = 'apppulse_session';
 const SESSION_DAYS = 30;
+
+export class InvalidCredentialsError extends Error {
+  constructor() {
+    super('Invalid email or password');
+    this.name = 'InvalidCredentialsError';
+  }
+}
 
 export interface AuthenticatedWorkspace {
   userId: string;
@@ -50,7 +57,7 @@ export function requestToken(req: Request): string | undefined {
   return entry?.slice(SESSION_COOKIE.length + 1);
 }
 
-async function createSessionWithClient(client: { query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }, userId: string, workspaceId: string) {
+async function createSessionWithClient(client: DatabaseClient, userId: string, workspaceId: string) {
   const token = crypto.randomBytes(32).toString('base64url');
   const expires = new Date(Date.now() + SESSION_DAYS * 86400000);
   await client.query('INSERT INTO sessions(id,user_id,workspace_id,token_hash,expires_at) VALUES ($1,$2,$3,$4,$5)', [`ses_${crypto.randomUUID()}`, userId, workspaceId, hash(token), expires.toISOString()]);
@@ -89,7 +96,7 @@ export async function login(email: string, password: string) {
      WHERE u.email = $1 ORDER BY (wm.role = 'owner') DESC, wm.created_at ASC LIMIT 1`,
     [email.trim().toLowerCase()],
   );
-  if (!rows[0] || !passwordMatches(password, rows[0].password_hash)) throw new Error('Invalid email or password');
+  if (!rows[0] || !passwordMatches(password, rows[0].password_hash)) throw new InvalidCredentialsError();
   return transaction((client) => createSessionWithClient(client, rows[0].id, rows[0].workspace_id));
 }
 

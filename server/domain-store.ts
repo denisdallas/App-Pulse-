@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { PoolClient, QueryResultRow } from 'pg';
+import type { QueryResultRow } from 'pg';
 import type {
   Application,
   AppDiscoveryFilter,
@@ -18,7 +18,7 @@ import type {
 import { calculateOpportunityScore } from '../src/lib/scoring.ts';
 import { generateReviewFingerprint } from '../src/lib/dedup.ts';
 import { isEmailSuppressed } from '../src/lib/suppression.ts';
-import { query, transaction } from './db.ts';
+import { query, transaction, type DatabaseClient } from './db.ts';
 import type { AuthenticatedWorkspace } from './auth.ts';
 
 export type WorkspaceActor = AuthenticatedWorkspace;
@@ -92,7 +92,7 @@ function cleanApplication(input: Application): Application {
     releaseDate: safeText(input.releaseDate, 64),
     lastUpdated: safeText(input.lastUpdated, 64),
     currentVersion: safeText(input.currentVersion, 64),
-    updateFrequency: input.updateFrequency,
+    updateFrequency: ['Daily', 'Weekly', 'Bi-weekly', 'Monthly', 'Quarterly', 'Stale', 'Unknown'].includes(input.updateFrequency) ? input.updateFrequency : 'Unknown',
     storeUrl: safeText(input.storeUrl, 2048),
     collectionAvailable: Boolean(input.collectionAvailable),
     status: input.status === 'active' || input.status === 'indexing' ? input.status : 'error',
@@ -118,6 +118,7 @@ function cleanReview(input: Review): Review {
     marketplace: input.marketplace,
     text,
     starRating,
+    ratingScale: input.ratingScale === 'binary_recommendation' ? 'binary_recommendation' : 'stars',
     reviewDate,
     language: safeText(input.language, 32) || 'und',
     reviewUrl: safeText(input.reviewUrl, 2048) || undefined,
@@ -238,7 +239,7 @@ function cleanCampaign(input: Campaign): Campaign {
 }
 
 async function audit(
-  client: PoolClient,
+  client: DatabaseClient,
   actor: WorkspaceActor,
   action: string,
   entityType: string,
@@ -253,7 +254,7 @@ async function audit(
 }
 
 async function assertIdsInWorkspace(
-  client: PoolClient,
+  client: DatabaseClient,
   table: 'applications' | 'reviews' | 'complaint_themes' | 'opportunities',
   workspaceId: string,
   ids: string[],
@@ -265,8 +266,8 @@ async function assertIdsInWorkspace(
 }
 
 async function replaceRelation(
-  client: PoolClient,
-  table: 'theme_applications' | 'theme_reviews' | 'forecast_applications' | 'opportunity_applications' | 'opportunity_reviews' | 'research_project_applications' | 'research_project_reviews' | 'research_project_themes' | 'research_project_opportunities',
+  client: DatabaseClient,
+  table: 'theme_applications' | 'theme_reviews' | 'forecast_applications' | 'forecast_reviews' | 'opportunity_applications' | 'opportunity_reviews' | 'research_project_applications' | 'research_project_reviews' | 'research_project_themes' | 'research_project_opportunities',
   workspaceId: string,
   ownerColumn: 'theme_id' | 'forecast_id' | 'opportunity_id' | 'project_id',
   ownerId: string,
@@ -305,7 +306,7 @@ export class WorkspaceDomainStore {
           (SELECT COUNT(*) FROM contacts WHERE workspace_id=$1) AS total_contacts,
           (SELECT COUNT(*) FROM campaigns WHERE workspace_id=$1 AND status <> 'completed') AS active_campaigns,
           (SELECT COUNT(*) FROM suppression_records WHERE workspace_id=$1) AS suppression_count,
-          (SELECT COUNT(*) FROM reviews WHERE workspace_id=$1 AND provenance='live') AS live_reviews`,
+          (SELECT COUNT(*) FROM reviews WHERE workspace_id=$1 AND provenance IN ('live','live_marketplace')) AS live_reviews`,
         [actor.workspaceId],
       ),
       query<{ category: string; count: string }>(
@@ -404,37 +405,59 @@ export class WorkspaceDomainStore {
     if (search) reviews = reviews.filter((review) => review.text.toLowerCase().includes(search) || review.appName.toLowerCase().includes(search) || (review.classification?.keywords || []).some((keyword) => keyword.toLowerCase().includes(search)));
     const total = reviews.length;
     const offset = Math.max(0, Math.min(20_000, Math.trunc(filter.offset || 0)));
-    const limit = Math.max(1, Math.min(500, Math.trunc(filter.limit || 50)));
+    const limit = Math.max(1, Math.min(25_000, Math.trunc(filter.limit || 50)));
     return { reviews: reviews.slice(offset, offset + limit), total };
   }
 
   async getAllReviews(actor: WorkspaceActor, filter: ReviewFilters = {}): Promise<Review[]> {
-    const result = await this.getReviews(actor, { ...filter, limit: 500, offset: 0 });
+    const result = await this.getReviews(actor, { ...filter, limit: Math.max(1, Math.min(25_000, Math.trunc(filter.limit || 25_000))), offset: 0 });
     return result.reviews;
+  }
+
+  private async saveReviewsOnClient(
+    client: DatabaseClient,
+    actor: WorkspaceActor,
+    reviews: Review[],
+    provenance: 'live' | 'imported',
+  ): Promise<{ inserted: number; duplicates: number }> {
+    const appIds = [...new Set(reviews.map((review) => review.appId))];
+    await assertIdsInWorkspace(client, 'applications', actor.workspaceId, appIds);
+    let inserted = 0;
+    for (const review of reviews) {
+      if (review.provenance === 'ai_generated' || review.provenance === 'calculated') throw new Error('Generated review records cannot be persisted as source evidence');
+      const storedProvenance = review.provenance === 'seed' ? 'seed' : review.provenance === 'imported' ? 'imported' : provenance;
+      const result = await client.query(
+        `INSERT INTO reviews(id,workspace_id,application_id,marketplace,source_id,source_url,body,rating,review_date,collected_at,provenance,fingerprint,metadata,payload)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb)
+         ON CONFLICT DO NOTHING RETURNING id`,
+        [review.id, actor.workspaceId, review.appId, review.marketplace, review.sourceReviewId || review.id, review.reviewUrl || null, review.text, review.starRating, review.reviewDate || null, review.collectedAt, storedProvenance, review.fingerprint, JSON.stringify({ classification: review.classification || null, ratingScale: review.ratingScale }), JSON.stringify({ ...review, provenance: storedProvenance === 'live' ? 'live_marketplace' : storedProvenance })],
+      );
+      inserted += result.rowCount || 0;
+    }
+    if (inserted) await audit(client, actor, 'COLLECT_REVIEWS', 'Review', 'batch', { inserted, received: reviews.length });
+    return { inserted, duplicates: reviews.length - inserted };
   }
 
   async saveReviews(actor: WorkspaceActor, inputs: Review[], provenance: 'live' | 'imported' = 'live'): Promise<{ inserted: number; duplicates: number }> {
     if (!Array.isArray(inputs) || inputs.length > 1000) throw new Error('Review batch exceeds the allowed size');
     const reviews = inputs.map(cleanReview);
-    const appIds = [...new Set(reviews.map((review) => review.appId))];
-    return transaction(async (client) => {
-      await assertIdsInWorkspace(client, 'applications', actor.workspaceId, appIds);
-      let inserted = 0;
-      for (const review of reviews) {
-        const storedProvenance = review.provenance === 'seed' ? 'seed' : provenance;
-        const result = await client.query(
-          `INSERT INTO reviews(id,workspace_id,application_id,marketplace,source_id,source_url,body,rating,review_date,collected_at,provenance,fingerprint,metadata,payload)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb)
-           ON CONFLICT DO NOTHING RETURNING id`,
-          [review.id, actor.workspaceId, review.appId, review.marketplace, review.sourceReviewId || review.id, review.reviewUrl || null, review.text, review.starRating, review.reviewDate, review.collectedAt, storedProvenance, review.fingerprint, JSON.stringify({ classification: review.classification || null }), JSON.stringify({ ...review, provenance: storedProvenance === 'live' ? 'live_marketplace' : storedProvenance })],
-        );
-        inserted += result.rowCount || 0;
-      }
-      if (inserted) await audit(client, actor, 'COLLECT_REVIEWS', 'Review', 'batch', { inserted, received: reviews.length });
-      return { inserted, duplicates: reviews.length - inserted };
-    });
+    return transaction((client) => this.saveReviewsOnClient(client, actor, reviews, provenance));
   }
 
+  async saveCollectedReviews(actor: WorkspaceActor, appId: string, inputs: Review[]): Promise<{ inserted: number; duplicates: number }> {
+    if (!Array.isArray(inputs) || inputs.length > 1000) throw new Error('Review batch exceeds the allowed size');
+    const reviews = inputs.map(cleanReview);
+    return transaction(async (client) => {
+      const saved = await this.saveReviewsOnClient(client, actor, reviews, 'live');
+      const application = await client.query<{ id: string }>(
+        'UPDATE applications SET last_collected_at=NOW() WHERE workspace_id=$1 AND id=$2 RETURNING id',
+        [actor.workspaceId, safeId(appId)],
+      );
+      if (!application.rows[0]) throw new WorkspaceRecordNotFound();
+      await audit(client, actor, 'COLLECTION_COMPLETED', 'Application', appId, { inserted: saved.inserted, duplicates: saved.duplicates });
+      return saved;
+    });
+  }
   async updateReview(actor: WorkspaceActor, id: string, updates: Pick<Review, 'notes' | 'savedToCollection' | 'tagList'>): Promise<Review> {
     const normalized = {
       notes: safeText(updates.notes, 2000) || undefined,
@@ -497,11 +520,13 @@ export class WorkspaceDomainStore {
     });
   }
 
-  private async saveForecastOnClient(client: PoolClient, actor: WorkspaceActor, forecast: PredictedWeakness): Promise<PredictedWeakness> {
+  private async saveForecastOnClient(client: DatabaseClient, actor: WorkspaceActor, forecast: PredictedWeakness): Promise<PredictedWeakness> {
     const id = safeId(forecast.id);
     const appIds = [...new Set(forecast.competitorAppIds || [])];
+    const reviewIds = [...new Set(forecast.supportingReviewIds || [])];
     await assertIdsInWorkspace(client, 'applications', actor.workspaceId, appIds);
-    const payload = { ...forecast, competitorAppIds: appIds, evidenceReviewQuotes: (forecast.evidenceReviewQuotes || []).filter((quote) => typeof quote === 'string').slice(0, 30) };
+    await assertIdsInWorkspace(client, 'reviews', actor.workspaceId, reviewIds);
+    const payload = { ...forecast, competitorAppIds: appIds, supportingReviewIds: reviewIds, evidenceReviewQuotes: (forecast.evidenceReviewQuotes || []).filter((quote): quote is string => typeof quote === 'string').slice(0, 30) };
     await client.query(
       `INSERT INTO predicted_weaknesses(workspace_id,id,score,payload)
        VALUES ($1,$2,$3,$4::jsonb)
@@ -509,6 +534,7 @@ export class WorkspaceDomainStore {
       [actor.workspaceId, id, finiteNumber(forecast.futureOpportunityScore, 0, 100), JSON.stringify(payload)],
     );
     await replaceRelation(client, 'forecast_applications', actor.workspaceId, 'forecast_id', id, 'application_id', appIds);
+    await replaceRelation(client, 'forecast_reviews', actor.workspaceId, 'forecast_id', id, 'review_id', reviewIds);
     return payload;
   }
 
@@ -532,7 +558,7 @@ export class WorkspaceDomainStore {
         severityScore: forecast.scoreBreakdown.severityImpactScore,
         frequencyScore: forecast.scoreBreakdown.trendVelocityScore,
         recencyScore: forecast.scoreBreakdown.incumbentInertiaScore,
-        breadthScore: forecast.scoreBreakdown.marketTAMReadinessScore,
+        breadthScore: forecast.scoreBreakdown.evidenceBreadthScore,
       };
       const opportunity: Opportunity = {
         id: oppId,
@@ -541,8 +567,9 @@ export class WorkspaceDomainStore {
         targetUser: `Users evaluating ${forecast.competitorAppNames.join(' and ')} based on the collected evidence.`,
         supportingAppIds: forecast.competitorAppIds,
         supportingAppNames: forecast.competitorAppNames,
-        supportingReviewIds: [],
-        complaintFrequency: 0,
+        supportingReviewIds: forecast.supportingReviewIds || [],
+        supportingReviewQuotes: forecast.evidenceReviewQuotes || [],
+        complaintFrequency: (forecast.supportingReviewIds || []).length,
         severity: forecast.scoreBreakdown.severityImpactScore >= 80 ? 'Critical' : 'High',
         existingSolutions: `${forecast.competitorAppNames.join(', ')} have the reported weakness: ${forecast.weaknessTitle}.`,
         proposedConcept: forecast.suggestedWedgeFeature,
@@ -571,19 +598,38 @@ export class WorkspaceDomainStore {
     return rows[0] ? asPayload<Opportunity>(rows[0].payload) : undefined;
   }
 
-  private async saveOpportunityOnClient(client: PoolClient, actor: WorkspaceActor, input: Opportunity): Promise<Opportunity> {
-    const opportunity = structuredClone(input);
-    opportunity.id = safeId(opportunity.id);
-    opportunity.supportingAppIds = [...new Set(opportunity.supportingAppIds || [])];
-    opportunity.supportingReviewIds = [...new Set(opportunity.supportingReviewIds || [])];
+  private async saveOpportunityOnClient(client: DatabaseClient, actor: WorkspaceActor, input: Opportunity): Promise<Opportunity> {
+    const opportunity = cleanOpportunity(input);
     await assertIdsInWorkspace(client, 'applications', actor.workspaceId, opportunity.supportingAppIds);
-    await assertIdsInWorkspace(client, 'reviews', actor.workspaceId, opportunity.supportingReviewIds);
-    const score = calculateOpportunityScore({
-      severity: opportunity.severity,
-      complaintFrequency: finiteNumber(opportunity.complaintFrequency, 0, 1_000_000),
-      latestReviewDate: undefined,
-      affectedAppCount: opportunity.supportingAppIds.length || 1,
-    });
+    const reviewEvidence = opportunity.supportingReviewIds.length
+      ? await client.query<{ id: string; application_id: string; text: string; review_date: string | null }>(
+          'SELECT id,application_id,body AS text,review_date::text AS review_date FROM reviews WHERE workspace_id=$1 AND id=ANY($2::text[])',
+          [actor.workspaceId, opportunity.supportingReviewIds],
+        )
+      : { rows: [] as { id: string; application_id: string; text: string; review_date: string | null }[] };
+    if (reviewEvidence.rows.length !== opportunity.supportingReviewIds.length) throw new WorkspaceRecordNotFound();
+
+    const evidenceAppIds = [...new Set(reviewEvidence.rows.map((review) => review.application_id))];
+    if (opportunity.supportingAppIds.some((appId) => !evidenceAppIds.includes(appId))) throw new WorkspaceRecordNotFound();
+    const appIds = evidenceAppIds.length ? evidenceAppIds : opportunity.supportingAppIds;
+    const appRows = appIds.length
+      ? await client.query<{ id: string; name: string }>('SELECT id,name FROM applications WHERE workspace_id=$1 AND id=ANY($2::text[])', [actor.workspaceId, appIds])
+      : { rows: [] as { id: string; name: string }[] };
+    if (appRows.rows.length !== appIds.length) throw new WorkspaceRecordNotFound();
+
+    opportunity.supportingAppIds = appRows.rows.map((app) => app.id);
+    opportunity.supportingAppNames = appRows.rows.map((app) => app.name);
+    opportunity.supportingReviewQuotes = [...new Set((opportunity.supportingReviewQuotes || []).filter((quote) => reviewEvidence.rows.some((review) => review.text.includes(quote))))].slice(0, 20);
+    if (reviewEvidence.rows.length && !opportunity.supportingReviewQuotes.length) {
+      opportunity.supportingReviewQuotes = reviewEvidence.rows.slice(0, 10).map((review) => review.text.slice(0, 240));
+    }
+    opportunity.complaintFrequency = reviewEvidence.rows.length;
+    if (!reviewEvidence.rows.length) opportunity.status = 'draft';
+
+    const latestReviewDate = reviewEvidence.rows.map((review) => review.review_date).filter((date): date is string => Boolean(date)).sort().at(-1);
+    const score = reviewEvidence.rows.length
+      ? calculateOpportunityScore({ severity: opportunity.severity, complaintFrequency: opportunity.complaintFrequency, latestReviewDate, affectedAppCount: opportunity.supportingAppIds.length })
+      : { score: 0, breakdown: { severityScore: 0, frequencyScore: 0, recencyScore: 0, breadthScore: 0 } };
     opportunity.priorityScore = score.score;
     opportunity.scoreBreakdown = score.breakdown;
     await client.query(
@@ -599,10 +645,17 @@ export class WorkspaceDomainStore {
   }
 
   async saveOpportunity(actor: WorkspaceActor, input: Opportunity): Promise<Opportunity> {
+    const [opportunity] = await this.saveOpportunities(actor, [input]);
+    return opportunity;
+  }
+
+  async saveOpportunities(actor: WorkspaceActor, inputs: Opportunity[]): Promise<Opportunity[]> {
+    if (!Array.isArray(inputs) || inputs.length > 100) throw new Error('Opportunity batch exceeds the allowed size');
     return transaction(async (client) => {
-      const opportunity = await this.saveOpportunityOnClient(client, actor, input);
-      await audit(client, actor, 'UPSERT', 'Opportunity', opportunity.id, { status: opportunity.status });
-      return opportunity;
+      const saved: Opportunity[] = [];
+      for (const input of inputs) saved.push(await this.saveOpportunityOnClient(client, actor, input));
+      if (saved.length) await audit(client, actor, 'UPSERT', 'Opportunity', 'batch', { count: saved.length });
+      return saved;
     });
   }
 
@@ -625,7 +678,7 @@ export class WorkspaceDomainStore {
     return rows[0] ? asPayload<Contact>(rows[0].payload) : undefined;
   }
 
-  private async saveContactOnClient(client: PoolClient, actor: WorkspaceActor, input: Contact): Promise<Contact> {
+  private async saveContactOnClient(client: DatabaseClient, actor: WorkspaceActor, input: Contact): Promise<Contact> {
     const contact = cleanContact(input);
     if (contact.appId) await assertIdsInWorkspace(client, 'applications', actor.workspaceId, [contact.appId]);
     if (contact.opportunityId) await assertIdsInWorkspace(client, 'opportunities', actor.workspaceId, [contact.opportunityId]);
@@ -741,31 +794,51 @@ export class WorkspaceDomainStore {
     });
   }
 
-  async prepareCampaignSend(actor: WorkspaceActor, id: string): Promise<{ status: 'not_configured' | 'adapter_unavailable'; message: string; blockedRecipients: string[]; campaign: Campaign }> {
+  async prepareCampaignSend(actor: WorkspaceActor, id: string): Promise<{ status: 'adapter_unavailable'; message: string; blockedRecipients: string[]; campaign: Campaign }> {
     return transaction(async (client) => {
       const rows = await client.query<{ payload: unknown }>('SELECT payload FROM campaigns WHERE workspace_id=$1 AND id=$2 FOR UPDATE', [actor.workspaceId, id]);
       if (!rows.rows[0]) throw new WorkspaceRecordNotFound();
       const campaign = asPayload<Campaign>(rows.rows[0].payload);
-      const suppressionRows = await client.query<{ payload: unknown }>('SELECT payload FROM suppression_records WHERE workspace_id=$1', [actor.workspaceId]);
+      const [suppressionRows, contactRows] = await Promise.all([
+        client.query<{ payload: unknown }>('SELECT payload FROM suppression_records WHERE workspace_id=$1', [actor.workspaceId]),
+        client.query<{ id: string; payload: unknown }>('SELECT id,payload FROM contacts WHERE workspace_id=$1 AND id=ANY($2::text[])', [actor.workspaceId, campaign.recipients.map((recipient) => recipient.contactId)]),
+      ]);
       const suppression = suppressionRows.rows.map((row) => asPayload<SuppressionRecord>(row.payload));
+      const contacts = new Map(contactRows.rows.map((row) => [row.id, asPayload<Contact>(row.payload)]));
       const blockedRecipients: string[] = [];
       campaign.recipients = campaign.recipients.map((recipient) => {
-        const result = isEmailSuppressed(recipient.email, suppression);
-        if (!result.suppressed) return recipient;
-        blockedRecipients.push(recipient.email);
-        return { ...recipient, status: 'suppressed' as const, failureReason: 'Workspace suppression policy' };
+        const contact = contacts.get(recipient.contactId);
+        const suppressionMatch = isEmailSuppressed(recipient.email, suppression);
+        const blocked = suppressionMatch.suppressed || !contact || contact.status === 'Do Not Contact' || contact.consentBasis === 'Unverified';
+        if (blocked) {
+          blockedRecipients.push(recipient.email);
+          return { ...recipient, status: 'suppressed' as const, failureReason: suppressionMatch.suppressed ? 'Workspace suppression policy' : 'Contact permission is unverified or withdrawn', sentAt: undefined, deliveredAt: undefined };
+        }
+        return { ...recipient, status: recipient.status === 'approved' ? 'approved' as const : 'pending' as const, sentAt: undefined, deliveredAt: undefined, failureReason: undefined };
       });
-      campaign.stats = { ...campaign.stats, total: campaign.recipients.length, suppressed: campaign.recipients.filter((item) => item.status === 'suppressed').length };
-      await client.query('UPDATE campaigns SET payload=$3::jsonb,updated_at=NOW() WHERE workspace_id=$1 AND id=$2', [actor.workspaceId, id, JSON.stringify(campaign)]);
-      for (const recipient of campaign.recipients.filter((item) => item.status === 'suppressed')) {
+      campaign.status = campaign.status === 'approved' && campaign.recipients.some((recipient) => recipient.status === 'approved') ? 'approved' : 'draft';
+      campaign.stats = {
+        total: campaign.recipients.length,
+        approved: campaign.recipients.filter((recipient) => recipient.status === 'approved').length,
+        sent: 0,
+        delivered: 0,
+        opened: 0,
+        replied: 0,
+        bounced: 0,
+        unsubscribed: 0,
+        suppressed: blockedRecipients.length,
+      };
+      await client.query('UPDATE campaigns SET status=$3,payload=$4::jsonb,updated_at=NOW() WHERE workspace_id=$1 AND id=$2', [actor.workspaceId, id, campaign.status, JSON.stringify(campaign)]);
+      await client.query('DELETE FROM campaign_recipients WHERE workspace_id=$1 AND campaign_id=$2', [actor.workspaceId, id]);
+      for (const recipient of campaign.recipients) {
         await client.query(
-          'UPDATE campaign_recipients SET status=$4,payload=$5::jsonb,updated_at=NOW() WHERE workspace_id=$1 AND campaign_id=$2 AND contact_id=$3',
+          'INSERT INTO campaign_recipients(workspace_id,campaign_id,contact_id,status,payload) VALUES ($1,$2,$3,$4,$5::jsonb)',
           [actor.workspaceId, id, recipient.contactId, recipient.status, JSON.stringify(recipient)],
         );
       }
-      await audit(client, actor, 'SEND_BLOCKED', 'Campaign', id, { reason: 'Delivery adapter unavailable', suppressedCount: blockedRecipients.length, sentCount: 0 });
+      await audit(client, actor, 'SEND_BLOCKED', 'Campaign', id, { reason: 'No delivery adapter is implemented', suppressedCount: blockedRecipients.length, sentCount: 0 });
       return {
-        status: process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS ? 'adapter_unavailable' : 'not_configured',
+        status: 'adapter_unavailable',
         message: 'No delivery adapter is implemented; no messages were sent.',
         blockedRecipients,
         campaign,

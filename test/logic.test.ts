@@ -183,7 +183,7 @@ test('calculateFutureOpportunityScore calculates weighted forecast scores', () =
     severity: 'Critical',
     updateFrequency: 'Stale',
     affectedCompetitorCount: 2,
-    estimatedChurnRiskPct: 35,
+  
   });
 
   assert.equal(highRiskForecast.scoreBreakdown.trendVelocityScore, 100);
@@ -196,7 +196,7 @@ test('calculateFutureOpportunityScore calculates weighted forecast scores', () =
     severity: 'Low',
     updateFrequency: 'Daily',
     affectedCompetitorCount: 1,
-    estimatedChurnRiskPct: 10,
+  
   });
 
   assert.ok(lowRiskForecast.futureOpportunityScore < 45);
