@@ -3,22 +3,28 @@ import fs from 'node:fs';
 import path from 'node:path';
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import { fileURLToPath } from 'node:url';
-import { draftOutreachEmailWithAI, isAIProviderConfigured } from './ai.ts';
+import { AI_MODEL_ID, draftOutreachEmailWithAI, isAIProviderConfigured } from './ai.ts';
 import { authMiddleware, authSecretConfigured, clearTokenCookie, currentSession, InvalidCredentialsError, login, logout, requestToken, register, tokenCookie, type AuthenticatedWorkspace } from './auth.ts';
 import { connectorRegistry } from './connectors/index.ts';
+import { getMarketplaceCapabilities } from './connectors/types.ts';
 import { databaseConfigured, query } from './db.ts';
 import { domainStore, WorkspaceRecordNotFound, type WorkspaceActor } from './domain-store.ts';
 import { cancelJob, enqueueJob, getActiveJobWorkerCount, getJob, listJobs, type JobType } from './job-queue.ts';
 import { processNextJob } from './job-worker.ts';
 import { getMigrationStatus } from './migrate.ts';
 import { jsonToCsv, parseCsv } from '../src/lib/csv.ts';
-import type { Application, AppDiscoveryFilter, Campaign, Contact, Marketplace, Opportunity, ResearchProject, Review, SuppressionRecord } from '../src/types.ts';
+import { jsonToXlsx } from './exports.ts';
+import type { Application, AppCategory, AppDiscoveryFilter, Campaign, Contact, Marketplace, Opportunity, ResearchProject, Review, SuppressionRecord } from '../src/types.ts';
 import { generateResearchReport } from './reports.ts';
 
 const app = express();
 app.set('trust proxy', 1);
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
-const supportedMarketplaces = new Set<Marketplace>(['steam']);
+const supportedDiscoveryMarketplaces = new Set<Marketplace>(['steam', 'apple']);
+const supportedAppCategories = new Set<AppCategory>([
+  'Finance', 'Productivity', 'Healthcare', 'Education', 'E-commerce', 'Gaming',
+  'Fitness', 'Business Software', 'Developer Tools', 'Other',
+]);
 
 class ApiError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -32,6 +38,52 @@ const asyncRoute = (handler: (req: Request, res: Response) => Promise<unknown> |
 
 function actorFrom(res: Response): WorkspaceActor {
   return res.locals.auth as AuthenticatedWorkspace;
+}
+
+async function requireCurrentMigrations(): Promise<void> {
+  const status = await getMigrationStatus();
+  if (!status.current) {
+    throw new ApiError(503, 'AppPulse PostgreSQL storage is not initialized. Apply the reviewed migrations explicitly before registering or signing in.');
+  }
+}
+
+function isPublicHttpsSourceUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && Boolean(url.hostname) && url.hostname !== 'localhost' && !url.hostname.endsWith('.invalid');
+  } catch {
+    return false;
+  }
+}
+
+async function connectorStatuses() {
+  return Promise.all(connectorRegistry.getAll().map(async (connector) => {
+    const capabilities = getMarketplaceCapabilities(connector.marketplace);
+    let connection: Awaited<ReturnType<typeof connector.getStatus>>;
+    try {
+      connection = await connector.getStatus();
+    } catch {
+      connection = { status: 'degraded', latencyMs: 0, message: 'Source health check failed.', reviewCoverage: 'Unavailable' };
+    }
+    return {
+      marketplace: connector.marketplace,
+      name: connector.displayName,
+      configuration: capabilities.discovery ? 'public_source' : 'not_configured',
+      connectivity: connection.status,
+      capability: capabilities.reviewCollection ? 'review_collection_implemented_not_verified' : capabilities.discovery ? 'catalog_discovery_only' : 'unsupported',
+      capabilities,
+      latencyMs: Number.isFinite(connection.latencyMs) ? connection.latencyMs : null,
+      lastTestedAt: new Date().toISOString(),
+      lastSuccessfulRetrievalAt: null,
+      message: connection.message,
+      reviewCoverage: connection.reviewCoverage,
+      nextAction: capabilities.reviewCollection
+        ? 'Run a workspace-authorized collection job to verify review retrieval.'
+        : capabilities.discovery
+          ? 'Catalog discovery is available; review text is not exposed by this connector.'
+          : 'No supported connector is configured. Do not treat this marketplace as searchable or collectible.',
+    };
+  }));
 }
 
 function ownerOnly(req: Request, res: Response, next: NextFunction): void {
@@ -203,6 +255,7 @@ app.get(['/api/health', '/api/health/ready'], asyncRoute(async (_req, res) => {
 app.post('/api/auth/register', asyncRoute(async (req, res) => {
   if (!databaseConfigured()) throw new ApiError(503, 'Authentication requires DATABASE_URL configuration');
   if (!authSecretConfigured()) throw new ApiError(503, 'Authentication requires a valid AUTH_SESSION_SECRET');
+  await requireCurrentMigrations();
   const result = await register(String(req.body?.email || ''), String(req.body?.password || ''), String(req.body?.workspaceName || 'My Workspace'));
   tokenCookie(res, result.token, result.expires);
   res.status(201).json({ user: result.user, expiresAt: result.expires.toISOString() });
@@ -211,6 +264,7 @@ app.post('/api/auth/register', asyncRoute(async (req, res) => {
 app.post('/api/auth/login', asyncRoute(async (req, res) => {
   if (!databaseConfigured()) throw new ApiError(503, 'Authentication requires DATABASE_URL configuration');
   if (!authSecretConfigured()) throw new ApiError(503, 'Authentication requires a valid AUTH_SESSION_SECRET');
+  await requireCurrentMigrations();
   try {
     const result = await login(String(req.body?.email || ''), String(req.body?.password || ''));
     tokenCookie(res, result.token, result.expires);
@@ -230,41 +284,42 @@ app.post('/api/auth/logout', asyncRoute(async (req, res) => {
 app.get('/api/auth/session', asyncRoute(async (req, res) => {
   if (!databaseConfigured()) throw new ApiError(503, 'Authentication requires DATABASE_URL configuration');
   if (!authSecretConfigured()) throw new ApiError(503, 'Authentication requires a valid AUTH_SESSION_SECRET');
+  await requireCurrentMigrations();
   const session = await currentSession(requestToken(req));
   if (!session) throw new ApiError(401, 'Authentication required');
   res.json({ user: session });
 }));
 
 app.get('/api/integrations/status', asyncRoute(async (_req, res) => {
-  const connectors = await Promise.all(connectorRegistry.getAll().map(async (connector) => {
-    let connection: { status: string; latencyMs?: number; message?: string };
-    try {
-      connection = await connector.getStatus();
-    } catch {
-      connection = { status: 'unavailable' };
-    }
-    const supportsDiscovery = connector.marketplace === 'steam';
-    const supportsReviews = connector.marketplace === 'steam';
-    return {
-      marketplace: connector.marketplace,
-      name: connector.displayName,
-      configuration: 'public_source',
-      connectivity: connection.status,
-      capability: supportsDiscovery || supportsReviews ? 'implemented_not_end_to_end_verified' : 'unsupported',
-      capabilities: { discovery: supportsDiscovery, reviews: supportsReviews },
-      latencyMs: Number.isFinite(connection.latencyMs) ? connection.latencyMs : null,
-      lastTestedAt: new Date().toISOString(),
-      lastSuccessfulRetrievalAt: null,
-      message: connection.status === 'operational' ? 'Source endpoint responded; retrieval capability is not verified by this health probe.' : 'Source endpoint is unavailable or unsupported.',
-      nextAction: supportsReviews ? 'Run a real, workspace-authorized collection job to verify review retrieval.' : 'No review collection capability is currently verified for this marketplace.',
-    };
-  }));
   const aiConfigured = isAIProviderConfigured();
   res.json({
     generatedAt: new Date().toISOString(),
-    statuses: connectors,
-    email: { configuration: 'not_implemented', connectivity: 'not_tested', capability: 'delivery_adapter_unavailable', status: 'not_ready', nextAction: 'No email delivery adapter is implemented; no messages can be sent.' },
-    ai: { configuration: aiConfigured ? 'configured' : 'not_configured', connectivity: 'not_tested', capability: 'not_verified', status: aiConfigured ? 'configured_not_tested' : 'not_configured' },
+    statuses: await connectorStatuses(),
+    email: {
+      provider: null,
+      configuration: 'not_implemented',
+      connectivity: 'not_tested',
+      capability: 'delivery_adapter_unavailable',
+      status: 'not_ready',
+      sentCount: 0,
+      nextAction: 'No email provider is connected. AppPulse will not send or report delivery; configure an approved provider before enabling outbound mail.',
+    },
+    prospectDiscovery: {
+      configuration: 'not_implemented',
+      connectivity: 'not_tested',
+      capability: 'manual_or_import_only',
+      status: 'not_configured',
+      nextAction: 'No business-prospect data source is connected. Add contacts manually or import source-linked records; AppPulse does not generate leads.',
+    },
+    ai: {
+      provider: 'Vercel AI Gateway',
+      model: AI_MODEL_ID,
+      configuration: aiConfigured ? 'runtime_available' : 'runtime_auth_required',
+      connectivity: 'not_tested',
+      capability: aiConfigured ? 'evidence-grounded generation with deterministic fallback' : 'deterministic_fallback',
+      status: aiConfigured ? 'configured_not_tested' : 'not_configured',
+      nextAction: aiConfigured ? 'AI requests use the Vercel AI Gateway at runtime; connectivity is checked when a user runs an analysis.' : 'Deploy in a Vercel/v0 runtime with AI Gateway access to enable model generation.',
+    },
   });
 }));
 
@@ -316,18 +371,36 @@ app.get('/api/apps/:id', asyncRoute(async (req, res) => {
 
 app.post('/api/apps/search-online', ownerOnly, asyncRoute(async (req, res) => {
   const queryText = requiredString(req.body?.query, 'query', 200);
-  const marketplace = String(req.body?.marketplace || 'steam') as Marketplace;
-  if (!supportedMarketplaces.has(marketplace)) throw new ApiError(400, 'Unsupported marketplace');
-  const connector = connectorRegistry.get(marketplace);
-  if (!connector) throw new ApiError(400, 'Unsupported marketplace');
-  let liveApps: Application[];
-  try {
-    liveApps = await connector.searchApps({ query: queryText, limit: 12 });
-  } catch {
-    throw new ApiError(502, 'Marketplace search is unavailable; no results were saved');
+  const requestedMarketplace = String(req.body?.marketplace || 'steam');
+  const category = typeof req.body?.category === 'string' ? req.body.category : undefined;
+  if (category && !supportedAppCategories.has(category as AppCategory)) throw new ApiError(400, 'Unsupported application category');
+  const marketplaces = requestedMarketplace === 'all'
+    ? [...supportedDiscoveryMarketplaces]
+    : [requestedMarketplace as Marketplace];
+  if (marketplaces.some((marketplace) => !supportedDiscoveryMarketplaces.has(marketplace))) {
+    throw new ApiError(400, 'Live catalog discovery is currently available for Steam and Apple App Store only.');
   }
+
+  const outcomes = await Promise.all(marketplaces.map(async (marketplace) => {
+    const connector = connectorRegistry.get(marketplace);
+    if (!connector) return { marketplace, apps: [] as Application[], error: 'Connector unavailable.' };
+    try {
+      const apps = await connector.searchApps({ query: queryText, category, limit: 12 });
+      return { marketplace, apps, error: null };
+    } catch {
+      return { marketplace, apps: [] as Application[], error: 'Source search failed; no results were saved from this marketplace.' };
+    }
+  }));
+  const successful = outcomes.filter((outcome) => outcome.error === null);
+  if (!successful.length) throw new ApiError(502, 'All selected marketplace searches failed; no results were saved.');
+  const liveApps = successful.flatMap((outcome) => outcome.apps)
+    .filter((appItem) => !category || appItem.category === category);
   const saved = await domainStore.saveApps(actorFrom(res), liveApps, 'live');
-  res.json({ apps: saved, count: saved.length });
+  res.json({
+    apps: saved,
+    count: saved.length,
+    outcomes: outcomes.map(({ marketplace, error, apps }) => ({ marketplace, status: error ? 'failed' : apps.length ? 'completed' : 'empty', error })),
+  });
 }));
 
 app.get('/api/jobs', asyncRoute(async (req, res) => {
@@ -383,6 +456,10 @@ app.post('/api/apps/collect', ownerOnly, asyncRoute(async (req, res) => {
   const appId = requiredString(req.body?.appId, 'appId');
   const appItem = await domainStore.getAppById(actor, appId);
   if (!appItem) throw new WorkspaceRecordNotFound();
+  const capabilities = getMarketplaceCapabilities(appItem.marketplace);
+  if (!appItem.collectionAvailable || !capabilities.reviewCollection) {
+    throw new ApiError(409, 'Review collection is unavailable for this marketplace application; no job was queued.');
+  }
   const job = await enqueueJob(actor, 'collection', { appId, appName: appItem.name, marketplace: appItem.marketplace, negativeOnly: req.body?.negativeOnly === true }, safeJobKey(req.header('Idempotency-Key')));
   res.status(202).json({ job: { ...job, appId, appName: appItem.name, marketplace: appItem.marketplace }, message: 'Collection job queued for the configured worker.' });
 }));
@@ -472,6 +549,20 @@ app.get('/api/compare', asyncRoute(async (req, res) => {
   res.json({ comparison: comparisonData });
 }));
 
+app.post('/api/compare/analyze', ownerOnly, asyncRoute(async (req, res) => {
+  const appIds = jobInputAppIds(req.body?.appIds) || [];
+  if (appIds.length < 2 || appIds.length > 4) throw new ApiError(400, 'Select between two and four applications for comparison');
+  const actor = actorFrom(res);
+  const apps = await domainStore.getApps(actor);
+  if (appIds.some((id) => !apps.some((appItem) => appItem.id === id))) throw new WorkspaceRecordNotFound();
+  const appIdSet = new Set(appIds);
+  const evidence = (await domainStore.getAllReviews(actor, { limit: 25_000 }))
+    .filter((review) => appIdSet.has(review.appId) && (review.provenance === 'live_marketplace' || review.provenance === 'imported'));
+  if (evidence.length < 2) throw new ApiError(409, 'At least two non-seed source reviews are required before comparing competitors.');
+  const job = await enqueueJob(actor, 'analysis', { analysisKind: 'competitor_comparison', appIds }, safeJobKey(req.header('Idempotency-Key')));
+  res.status(202).json({ job, message: 'Evidence-based competitor comparison queued for the configured worker.' });
+}));
+
 app.get('/api/opportunities', asyncRoute(async (_req, res) => res.json(await domainStore.getOpportunities(actorFrom(res)))));
 
 app.post('/api/opportunities/generate', ownerOnly, asyncRoute(async (req, res) => {
@@ -515,8 +606,10 @@ app.post('/api/contacts/import-csv', ownerOnly, asyncRoute(async (req, res) => {
     const name = row.name || row.Name;
     const company = row.company || row.Company;
     if (!email || !name || !company || !/^\S+@\S+\.\S+$/.test(email.trim())) continue;
+    const sourceUrl = row.sourceUrl || row.Source || '';
     const requestedBasis = row.consentBasis || row['Consent Basis'];
-    const consentBasis: Contact['consentBasis'] = ['Legitimate Interest (B2B)', 'Public Publisher Info', 'Inquiry Request'].includes(requestedBasis)
+    const consentBasis: Contact['consentBasis'] = isPublicHttpsSourceUrl(sourceUrl)
+      && ['Legitimate Interest (B2B)', 'Public Publisher Info', 'Inquiry Request'].includes(requestedBasis)
       ? requestedBasis as Contact['consentBasis']
       : 'Unverified';
     contacts.push({
@@ -528,7 +621,7 @@ app.post('/api/contacts/import-csv', ownerOnly, asyncRoute(async (req, res) => {
       phone: row.phone || row.Phone || undefined,
       website: row.website || row.Website || undefined,
       channel: 'email',
-      sourceUrl: row.sourceUrl || row.Source || '',
+      sourceUrl,
       status: 'New',
       consentBasis,
       notes: 'Imported from CSV; verify source and consent basis before outreach.',
@@ -558,7 +651,8 @@ app.post('/api/outreach/draft', asyncRoute(async (req, res) => {
   const opportunityId = requiredString(req.body?.opportunityId, 'opportunityId');
   const opportunity = await domainStore.getOpportunity(actor, opportunityId);
   if (!opportunity || !opportunity.supportingReviewIds.length) throw new ApiError(400, 'An opportunity with collected review evidence is required');
-  const validReviews = await domainStore.getAllReviews(actor, { limit: 25_000 });
+  const validReviews = (await domainStore.getAllReviews(actor, { limit: 25_000 }))
+    .filter((review) => review.provenance === 'live_marketplace' || review.provenance === 'imported');
   if (opportunity.supportingReviewIds.some((id) => !validReviews.some((review) => review.id === id))) throw new WorkspaceRecordNotFound();
   let appItem: Application | undefined;
   if (req.body?.appId) {
@@ -576,15 +670,20 @@ app.post('/api/outreach/draft', asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/campaigns', asyncRoute(async (_req, res) => res.json(await domainStore.getCampaigns(actorFrom(res)))));
-app.post('/api/campaigns', ownerOnly, asyncRoute(async (req, res) => res.json(await domainStore.saveCampaign(actorFrom(res), req.body as Campaign))));
+app.post('/api/campaigns', ownerOnly, asyncRoute(async (req, res) => {
+  const saved = await domainStore.saveCampaign(actorFrom(res), req.body as Campaign, req.body?.humanApproved === true);
+  res.json(saved);
+}));
 app.post('/api/campaigns/:id/send', ownerOnly, asyncRoute(async (req, res) => {
   const result = await domainStore.prepareCampaignSend(actorFrom(res), req.params.id);
   res.json({
     success: false,
     status: result.status,
     sent: 0,
+    delivered: 0,
     blocked: result.blockedRecipients.length,
-    reasons: [result.message, ...result.blockedRecipients.map((email) => `${email}: Suppressed by workspace policy`)],
+    blockedRecipients: result.blockedReasons,
+    reasons: [result.message, ...result.blockedReasons.map((item) => `${item.email}: ${item.reason}`)],
   });
 }));
 
@@ -597,26 +696,65 @@ app.get('/api/audit-logs', ownerOnly, asyncRoute(async (req, res) => {
 
 app.get('/api/settings', asyncRoute(async (_req, res) => {
   const actor = actorFrom(res);
-  const statuses = await Promise.all(connectorRegistry.getAll().map(async (connector) => {
-    try {
-      const source = await connector.getStatus();
-      return { marketplace: connector.marketplace, name: connector.displayName, configuration: 'public_source', connectivity: source.status, capability: connector.marketplace === 'steam' ? 'reviews_implemented_not_verified' : 'unsupported', latencyMs: Number.isFinite(source.latencyMs) ? source.latencyMs : null, lastSuccessfulRetrievalAt: null };
-    } catch {
-      return { marketplace: connector.marketplace, name: connector.displayName, configuration: 'unknown', connectivity: 'unavailable', capability: 'not_verified', latencyMs: null, lastSuccessfulRetrievalAt: null };
-    }
-  }));
+  const [connectors, migrations] = await Promise.all([connectorStatuses(), getMigrationStatus()]);
+  const activeWorkers = await getActiveJobWorkerCount().catch(() => 0);
+  const mode = process.env.JOB_EXECUTION_MODE;
+  const workerConfigured = (mode === 'worker' || mode === 'http_trigger')
+    && (mode !== 'http_trigger' || configuredWorkerTriggerSecrets().length > 0);
   const aiConfigured = isAIProviderConfigured();
+  let databaseConnectivity: 'reachable' | 'unreachable' = 'unreachable';
+  if (databaseConfigured()) {
+    try {
+      await query('SELECT 1');
+      databaseConnectivity = 'reachable';
+    } catch {
+      databaseConnectivity = 'unreachable';
+    }
+  }
   res.json({
     workspaceName: actor.workspaceName,
-    aiModel: 'gemini-3.8-flash',
-    aiStatus: aiConfigured ? 'configured_not_tested' : 'deterministic_fallback',
-    aiConfiguration: aiConfigured ? 'configured' : 'not_configured',
-    aiConnectivity: 'not_tested',
-    connectors: statuses,
-    emailProvider: 'No delivery adapter implemented; no messages are sent',
-    emailConfiguration: 'not_implemented',
-    emailDeliveryReady: false,
-    dataRetentionDays: 90,
+    connectors,
+    ai: {
+      provider: 'Vercel AI Gateway',
+      model: AI_MODEL_ID,
+      configuration: aiConfigured ? 'runtime_available' : 'runtime_auth_required',
+      connectivity: 'not_tested',
+      status: aiConfigured ? 'configured_not_tested' : 'deterministic_fallback',
+      nextAction: aiConfigured ? 'AI Gateway connectivity is checked when a user runs an analysis.' : 'Deploy in a Vercel/v0 runtime with AI Gateway access to enable model generation.',
+    },
+    email: {
+      provider: null,
+      configuration: 'not_implemented',
+      connectivity: 'not_tested',
+      status: 'not_ready',
+      deliveryReady: false,
+      nextAction: 'No email delivery adapter is connected; messages are never sent or marked delivered.',
+    },
+    prospectDiscovery: {
+      configuration: 'not_implemented',
+      status: 'not_configured',
+      nextAction: 'No business-prospect data source is connected. Add contacts manually or import source-linked records; AppPulse does not generate leads.',
+    },
+    storage: {
+      configuration: databaseConfigured() ? 'configured' : 'not_configured',
+      connectivity: databaseConnectivity,
+      migrations: migrations.current ? 'current' : 'pending',
+      pendingMigrations: migrations.pending,
+      nextAction: migrations.current ? 'PostgreSQL schema is current.' : 'Review and explicitly apply the pending PostgreSQL migrations before using workspace data.',
+    },
+    jobs: {
+      executionMode: mode || 'not_configured',
+      configuration: workerConfigured ? 'configured' : 'not_configured',
+      status: !workerConfigured ? 'not_configured' : activeWorkers ? 'active' : 'worker_not_observed',
+      activeWorkerCount: activeWorkers,
+      nextAction: !workerConfigured
+        ? 'Configure a separate worker process or authenticated external scheduler; jobs remain queued until one is active.'
+        : activeWorkers ? 'A worker has reported recently.' : 'Worker configuration exists, but no active worker heartbeat has been observed.',
+    },
+    dataRetention: {
+      status: 'not_implemented',
+      nextAction: 'No automated retention or deletion job is configured; records persist until manually removed where deletion is available.',
+    },
     suppressionCount: (await domainStore.getSuppressionList(actor)).length,
   });
 }));
@@ -624,8 +762,9 @@ app.get('/api/settings', asyncRoute(async (_req, res) => {
 app.get('/api/export', ownerOnly, asyncRoute(async (req, res) => {
   const actor = actorFrom(res);
   const type = typeof req.query.type === 'string' ? req.query.type : '';
-  const format = req.query.format === 'json' ? 'json' : req.query.format === 'csv' || !req.query.format ? 'csv' : undefined;
-  if (!format) throw new ApiError(400, 'Export format must be csv or json');
+  const requestedFormat = typeof req.query.format === 'string' ? req.query.format : 'csv';
+  const format = requestedFormat === 'csv' || requestedFormat === 'json' || requestedFormat === 'xlsx' ? requestedFormat : undefined;
+  if (!format) throw new ApiError(400, 'Export format must be csv, json, or xlsx');
   let output: unknown[];
   let columns: { key: string; header: string }[] = [];
   if (type === 'reviews') {

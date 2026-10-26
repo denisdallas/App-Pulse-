@@ -9,7 +9,8 @@ export type AppCategory =
   | 'Gaming'
   | 'Fitness'
   | 'Business Software'
-  | 'Developer Tools';
+  | 'Developer Tools'
+  | 'Other';
 
 export type ComplaintCategory =
   | 'Bugs & Crashes'
@@ -54,6 +55,7 @@ export interface Application {
 
 export interface PredictedWeakness {
   id: string;
+  provenance?: 'ai_generated' | 'calculated';
   competitorAppIds: string[];
   competitorAppNames: string[];
   weaknessTitle: string;
@@ -93,6 +95,35 @@ export interface AppDiscoveryFilter {
   updateFrequency?: string;
   hasFeatureRequests?: boolean;
   hasBugMentions?: boolean;
+}
+
+export interface CompetitorAnalysisMetric {
+  appId: string;
+  appName: string;
+  sampleReviewCount: number;
+  negativeReviewCount: number;
+  negativeSharePct: number | null;
+  featureRequestCount: number;
+  topComplaints: { category: string; count: number }[];
+}
+
+export interface CompetitorAnalysisFinding {
+  appId: string;
+  appName: string;
+  finding: string;
+  evidenceReviewIds: string[];
+  evidenceQuotes: string[];
+}
+
+export interface CompetitorAnalysisResult {
+  appIds: string[];
+  provenance: 'ai_generated' | 'calculated';
+  model?: string;
+  summary: string;
+  metrics: CompetitorAnalysisMetric[];
+  findings: CompetitorAnalysisFinding[];
+  evidenceReviewCount: number;
+  createdAt: string;
 }
 
 export interface ReviewClassification {
@@ -148,6 +179,7 @@ export interface ComplaintTheme {
   validationHypothesis: string;
   validationSteps: string[];
   trend: 'emerging' | 'stable' | 'decreasing';
+  provenance?: 'ai_generated' | 'calculated';
   createdAt: string;
 }
 
@@ -178,6 +210,7 @@ export interface Opportunity {
   scoreBreakdown: OpportunityScoreBreakdown;
   tags: string[];
   status: 'validating' | 'planned' | 'draft' | 'archived';
+  provenance?: 'seed' | 'calculated' | 'ai';
   createdAt: string;
 }
 
@@ -194,6 +227,8 @@ export interface CollectionJob {
   progress: number; // 0 - 100
   collectedCount: number;
   deduplicatedCount: number;
+  pagesFetched?: number;
+  hasMore?: boolean;
   error?: string;
   startedAt: string;
   completedAt?: string;
@@ -252,6 +287,8 @@ export interface Campaign {
     unsubscribed: number;
     suppressed: number;
   };
+  approvedBy?: string;
+  approvedAt?: string;
   createdAt: string;
 }
 

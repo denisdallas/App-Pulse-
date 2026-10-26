@@ -174,7 +174,7 @@ test('workspace APIs isolate data and durable jobs survive retries and server re
       company: 'AppPulse test suite',
       email: `contact-${crypto.randomUUID()}@example.invalid`,
       channel: 'email',
-      sourceUrl: 'https://example.invalid/contact-source',
+      sourceUrl: 'https://www.example.com/contact-source',
       status: 'New',
       consentBasis: 'Inquiry Request',
       notes: 'Disposable integration-test fixture.',

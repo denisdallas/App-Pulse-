@@ -1,132 +1,140 @@
-import 'dotenv/config';
 import crypto from 'node:crypto';
-import { GoogleGenAI } from '@google/genai';
-import { Review, ComplaintTheme, Opportunity, Contact, Application, PredictedWeakness } from '../src/types.ts';
+import { generateText, Output } from 'ai';
+import { z } from 'zod';
+import type {
+  Application,
+  ComplaintTheme,
+  Contact,
+  CompetitorAnalysisFinding,
+  CompetitorAnalysisMetric,
+  CompetitorAnalysisResult,
+  Opportunity,
+  PredictedWeakness,
+  Review,
+} from '../src/types.ts';
 import { calculateOpportunityScore } from '../src/lib/scoring.ts';
 import { calculateFutureOpportunityScore } from '../src/lib/forecast.ts';
 
-// Server-side initialization with required User-Agent telemetry header
-const apiKey = process.env.GEMINI_API_KEY;
+export const AI_MODEL_ID = 'google/gemini-4-argon';
+
+const complaintCategories = [
+  'Bugs & Crashes', 'Missing Features', 'UX & Navigation', 'Pricing & Subscriptions',
+  'Billing & Payments', 'Performance & Reliability', 'Customer Support', 'Privacy & Security',
+  'Compatibility', 'Advertising & Monetization', 'Feature Requests', 'Other',
+] as const;
+const severityLevels = ['Critical', 'High', 'Medium', 'Low'] as const;
+
 export function isAIProviderConfigured(): boolean {
-  return Boolean(apiKey && !/^(?:replace|change[-_ ]?me|your[-_ ]|example|placeholder|my_)/i.test(apiKey));
+  return process.env.VERCEL === '1' || Boolean(
+    process.env.V0_RUNTIME_URL || process.env.V0_BUILD_URL || process.env.V0_SANDBOX_URL,
+  );
 }
 
-let aiClient: GoogleGenAI | null = null;
+const themeCandidateSchema = z.object({
+  title: z.string().min(1).max(180),
+  category: z.enum(complaintCategories),
+  summary: z.string().min(1).max(1_200),
+  severity: z.enum(severityLevels),
+  confidenceScore: z.number().min(0).max(1),
+  evidence: z.array(z.object({
+    reviewId: z.string().min(1).max(240),
+    quote: z.string().min(12).max(800),
+  })).max(8),
+  potentialImprovement: z.string().max(600),
+  validationHypothesis: z.string().max(600),
+  validationSteps: z.array(z.string().min(1).max(500)).max(8),
+  trend: z.enum(['emerging', 'stable', 'decreasing']),
+});
 
-if (apiKey && isAIProviderConfigured()) {
-  aiClient = new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-}
-
-/**
- * AI-powered complaint classification and recurring pattern summarization.
- */
 export async function analyzeComplaintsWithAI(
   reviews: Review[],
-  affectedApps: Application[]
+  affectedApps: Application[],
 ): Promise<ComplaintTheme[]> {
-  const reviewsSample = reviews.slice(0, 40).map((r) => ({
-    app: r.appName,
-    rating: r.starRating,
-    text: r.text,
-    date: r.reviewDate,
-  }));
+  const negativeReviews = reviews.filter((review) => review.starRating <= 2 && review.text.trim().length >= 12);
+  if (!negativeReviews.length) return [];
 
-  if (aiClient) {
+  if (isAIProviderConfigured()) {
     try {
-      const prompt = `You are a Senior Product Intelligence Analyst at AppPulse Intelligence.
-Analyze the following negative user reviews across these applications: ${affectedApps.map((a) => a.name).join(', ')}.
-
-Identify 3 to 6 distinct, recurring complaint themes/patterns.
-For each theme, return valid JSON with an array of objects matching this exact structure:
-[
-  {
-    "title": "Short descriptive title of the recurring complaint",
-    "category": "One of: Bugs & Crashes | Missing Features | UX & Navigation | Pricing & Subscriptions | Billing & Payments | Performance & Reliability | Customer Support | Privacy & Security | Compatibility | Advertising & Monetization | Feature Requests | Other",
-    "summary": "Detailed 2-sentence summary of why users are dissatisfied and the exact friction points.",
-    "affectedAppNames": ["App Name 1", "App Name 2"],
-    "representativeQuotes": ["Exact or near-exact quote from review 1", "Exact or near-exact quote from review 2"],
-    "severity": "Critical | High | Medium | Low",
-    "confidenceScore": 0.95,
-    "potentialImprovement": "Concrete technical or product improvement to eliminate this pain point.",
-    "validationHypothesis": "Hypothesis about market demand if a competitor fixes this.",
-    "validationSteps": ["Step 1", "Step 2", "Step 3"],
-    "trend": "emerging | stable | decreasing"
-  }
-]
-
-Negative Reviews Data:
-${JSON.stringify(reviewsSample, null, 2)}
-`;
-
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.2,
-        },
+      const result = await generateText({
+        model: AI_MODEL_ID,
+        output: Output.array({ element: themeCandidateSchema, minItems: 0, maxItems: 6 }),
+        system: [
+          'You are a product research analyst. Analyze only the supplied non-seed marketplace review records.',
+          'Return recurring complaint hypotheses, not market-wide prevalence claims or verified causes.',
+          'Each theme must cite at least two distinct review IDs and exact contiguous quotes copied from those reviews.',
+          'If evidence is insufficient, return an empty array. Never invent a review, application, metric, or quote.',
+        ].join(' '),
+        prompt: JSON.stringify({
+          applications: affectedApps.map((app) => ({ id: app.id, name: app.name, category: app.category })),
+          negativeReviews: negativeReviews.slice(0, 40).map((review) => ({
+            reviewId: review.id,
+            appId: review.appId,
+            appName: review.appName,
+            rating: review.starRating,
+            date: review.reviewDate,
+            text: review.text.slice(0, 800),
+          })),
+        }),
+        temperature: 0.2,
+        maxOutputTokens: 4_000,
+        abortSignal: AbortSignal.timeout(30_000),
       });
 
-      const parsed = JSON.parse(response.text?.trim() || '[]');
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const grounded = parsed.flatMap((item, idx) => {
-          const candidateQuotes: unknown[] = Array.isArray(item.representativeQuotes) ? item.representativeQuotes : [];
-          const quotes = candidateQuotes.filter((quote): quote is string => typeof quote === 'string' && quote.trim().length >= 12);
-          const matchedReviews = reviews.filter((review) => quotes.some((quote: string) => review.text.includes(quote.trim())));
-          if (matchedReviews.length < 2) return [];
-          const matchedAppIds = [...new Set(matchedReviews.map((review) => review.appId))];
-          const matchedAppNames = [...new Set(matchedReviews.map((review) => review.appName))];
-          const matchedDates = matchedReviews.map((review) => review.reviewDate).filter(Boolean).sort();
-          const validSeverity = ['Critical', 'High', 'Medium', 'Low'].includes(item.severity) ? item.severity : 'High';
-          const confidence = Number(item.confidenceScore);
-          return [{
-            id: `theme_ai_${Date.now()}_${idx}`,
-            title: typeof item.title === 'string' ? item.title.slice(0, 180) : 'Collected review theme',
-            category: item.category || 'Other',
-            summary: typeof item.summary === 'string' ? item.summary.slice(0, 1200) : '',
-            reviewCount: matchedReviews.length,
-            affectedApps: matchedAppIds,
-            affectedAppNames: matchedAppNames,
-            representativeQuotes: [...new Set(quotes.filter((quote: string) => matchedReviews.some((review) => review.text.includes(quote.trim()))))].slice(0, 5),
-            supportingReviewIds: [...new Set(matchedReviews.map((review) => review.id))],
-            earliestDate: matchedDates[0] || '',
-            latestDate: matchedDates.at(-1) || '',
-            severity: validSeverity,
-            confidenceScore: Number.isFinite(confidence)
-              ? Math.min(Math.max(0, Math.min(0.9, confidence)), Math.min(0.9, 0.25 + 0.15 * Math.log1p(matchedReviews.length)))
-              : Math.min(0.9, 0.25 + 0.15 * Math.log1p(matchedReviews.length)),  
-            potentialImprovement: typeof item.potentialImprovement === 'string' ? item.potentialImprovement.slice(0, 600) : '',
-            validationHypothesis: typeof item.validationHypothesis === 'string' ? item.validationHypothesis.slice(0, 600) : '',
-            validationSteps: Array.isArray(item.validationSteps) ? item.validationSteps.filter((step: unknown): step is string => typeof step === 'string').slice(0, 8) : [],
-            trend: ['emerging', 'stable', 'decreasing'].includes(item.trend) ? item.trend : 'stable',
-            createdAt: new Date().toISOString(),
-          }];
+      const parsed = result.output ?? [];
+      const reviewById = new Map(negativeReviews.map((review) => [review.id, review]));
+      const grounded = parsed.flatMap((candidate, index) => {
+        const citedReviews = candidate.evidence.flatMap((citation) => {
+          const review = reviewById.get(citation.reviewId);
+          return review && review.text.includes(citation.quote.trim())
+            ? [{ review, quote: citation.quote.trim() }]
+            : [];
         });
-        if (grounded.length) return grounded;
-      }
+        const uniqueReviews = [...new Map(citedReviews.map((item) => [item.review.id, item])).values()];
+        if (uniqueReviews.length < 2) return [];
+
+        const matchedApps = [...new Set(uniqueReviews.map((item) => item.review.appId))];
+        const matchedAppNames = [...new Set(uniqueReviews.map((item) => item.review.appName))];
+        const matchedDates = uniqueReviews.map((item) => item.review.reviewDate).filter(Boolean).sort();
+        const confidenceCeiling = Math.min(0.9, 0.25 + 0.15 * Math.log1p(uniqueReviews.length));
+        return [{
+          id: `theme_ai_${crypto.randomUUID()}`,
+          title: candidate.title,
+          category: candidate.category,
+          summary: candidate.summary,
+          reviewCount: uniqueReviews.length,
+          affectedApps: matchedApps,
+          affectedAppNames: matchedAppNames,
+          representativeQuotes: [...new Set(citedReviews.map((item) => item.quote))].slice(0, 5),
+          supportingReviewIds: uniqueReviews.map((item) => item.review.id),
+          earliestDate: matchedDates[0] || '',
+          latestDate: matchedDates.at(-1) || '',
+          severity: candidate.severity,
+          confidenceScore: Math.min(candidate.confidenceScore, confidenceCeiling),
+          potentialImprovement: candidate.potentialImprovement,
+          validationHypothesis: candidate.validationHypothesis,
+          validationSteps: candidate.validationSteps,
+          trend: candidate.trend,
+          provenance: 'ai_generated' as const,
+          createdAt: new Date().toISOString(),
+        }];
+      });
+      if (grounded.length) return grounded;
     } catch {
-      console.warn('[analyzeComplaintsWithAI] Gemini request failed; using deterministic clustering of collected reviews.');
+      console.warn('[AppPulse AI] Gateway theme generation failed validation; using evidence-only clustering.');
     }
   }
 
-  // Deterministic clustering fallback
-  return getFallbackThemes(reviews, affectedApps);
+  return getFallbackThemes(negativeReviews, affectedApps);
 }
 
 function getFallbackThemes(reviews: Review[], affectedApps: Application[]): ComplaintTheme[] {
-  const categoryCounts: Record<string, { quotes: string[]; apps: Set<string>; reviewIds: string[]; dates: string[] }> = {};
+  const categoryCounts: Record<string, { quotes: string[]; appIds: Set<string>; appNames: Set<string>; reviewIds: string[]; dates: string[] }> = {};
 
   for (const review of reviews) {
-    const category = review.classification?.category || 'Bugs & Crashes';
-    categoryCounts[category] ??= { quotes: [], apps: new Set(), reviewIds: [], dates: [] };
-    categoryCounts[category].apps.add(review.appName);
+    const category = review.classification?.category || 'Other';
+    categoryCounts[category] ??= { quotes: [], appIds: new Set(), appNames: new Set(), reviewIds: [], dates: [] };
+    categoryCounts[category].appIds.add(review.appId);
+    categoryCounts[category].appNames.add(review.appName);
     categoryCounts[category].reviewIds.push(review.id);
     if (review.reviewDate) categoryCounts[category].dates.push(review.reviewDate);
     if (categoryCounts[category].quotes.length < 3 && review.text.length > 0) {
@@ -137,16 +145,15 @@ function getFallbackThemes(reviews: Review[], affectedApps: Application[]): Comp
   return Object.entries(categoryCounts)
     .filter(([, evidence]) => evidence.reviewIds.length >= 2)
     .map(([category, evidence], index) => {
-      const appNames = [...evidence.apps];
-      const appIds = affectedApps.filter((app) => appNames.includes(app.name)).map((app) => app.id);
+      const appNames = [...evidence.appNames];
+      const appIds = [...evidence.appIds].filter((id) => affectedApps.some((app) => app.id === id));
       const dates = evidence.dates.filter((date) => !Number.isNaN(Date.parse(date))).sort();
       const severity = category.includes('Crash') || category.includes('Bugs') ? 'Critical' : 'High';
-
       return {
-        id: `theme_clustered_${Date.now()}_${index}`,
+        id: `theme_clustered_${crypto.randomUUID()}_${index}`,
         title: `${category} review cluster${appNames.length ? ` in ${appNames.slice(0, 2).join(' & ')}` : ''}`,
         category: category as ComplaintTheme['category'],
-        summary: `Deterministic cluster of ${evidence.reviewIds.length} collected reviews classified as ${category}. This reflects only the collected sample, not marketplace-wide prevalence.`,
+        summary: `Deterministic cluster of ${evidence.reviewIds.length} stored reviews classified as ${category}. This describes only the collected sample, not marketplace-wide prevalence.`,
         reviewCount: evidence.reviewIds.length,
         affectedApps: appIds,
         affectedAppNames: appNames,
@@ -156,138 +163,199 @@ function getFallbackThemes(reviews: Review[], affectedApps: Application[]): Comp
         latestDate: dates.at(-1) || '',
         severity,
         confidenceScore: Math.min(0.9, 0.25 + 0.15 * Math.log1p(evidence.reviewIds.length)),
-        potentialImprovement: `Test whether a focused improvement to ${category.toLowerCase()} resolves the issues described in these collected reviews.`,
+        potentialImprovement: `Test whether a focused improvement to ${category.toLowerCase()} addresses the issues in these stored reviews.`,
         validationHypothesis: `Users represented by this review cluster may value an alternative that addresses ${category.toLowerCase()}; validate this with direct research.`,
         validationSteps: [
-          `Interview users about the specific ${category.toLowerCase()} examples in the collected reviews`,
-          `Prototype an improvement to the reported workflow`,
-          `Measure task success in a usability study`,
+          `Interview users about the specific ${category.toLowerCase()} examples in the stored reviews`,
+          'Prototype a response to the reported workflow issue',
+          'Measure task success in a user study',
         ],
-        trend: 'stable',
+        trend: 'stable' as const,
+        provenance: 'calculated' as const,
         createdAt: new Date().toISOString(),
       };
     });
 }
 
-/**
- * AI Opportunity Finder: converts recurring themes into structured product ideas.
- */
-export async function generateOpportunitiesWithAI(
-  themes: ComplaintTheme[],
-  apps: Application[]
-): Promise<Opportunity[]> {
-  const opportunities: Opportunity[] = [];
+const opportunityNarrativeSchema = z.object({
+  themeId: z.string().min(1).max(240),
+  title: z.string().min(1).max(240),
+  targetUser: z.string().max(1_000),
+  existingSolutions: z.string().max(1_200),
+  proposedConcept: z.string().max(1_200),
+  differentiationHypothesis: z.string().max(1_200),
+  validationQuestions: z.array(z.string().min(1).max(500)).max(8),
+  nextSteps: z.array(z.string().min(1).max(500)).max(8),
+  tags: z.array(z.string().min(1).max(80)).max(12),
+});
 
-  for (const theme of themes.filter((item) => item.supportingReviewIds?.length && item.representativeQuotes?.length).slice(0, 3)) {
-    const scoreResult = calculateOpportunityScore({
-      severity: theme.severity,
-      complaintFrequency: theme.reviewCount,
-      latestReviewDate: theme.latestDate,
-      affectedAppCount: theme.affectedApps.length,
-    });
-
-    opportunities.push({
-      id: `opp_gen_${Date.now()}_${theme.id}`,
-      title: `Next-Gen Solution: ${theme.title}`,
-      problemStatement: theme.summary,
-      targetUser: 'Users represented in the supporting collected review evidence.',
-      supportingAppIds: theme.affectedApps,
-      supportingAppNames: theme.affectedAppNames,
-      supportingReviewIds: theme.supportingReviewIds || [],
-      supportingReviewQuotes: theme.representativeQuotes,
-      complaintFrequency: theme.reviewCount,
-      severity: theme.severity,
-      existingSolutions: `Collected reviews from ${theme.affectedAppNames.join(', ')} include evidence in the ${theme.category} category.`,
-      proposedConcept: theme.potentialImprovement,
-      differentiationHypothesis: theme.validationHypothesis,
-      validationQuestions: [
-        'How does this limitation directly impact your weekly productivity or revenue?',
-        'What workarounds are you currently using to bypass this issue?',
-        'What would be your primary requirement before switching to a new solution?',
-      ],
-      nextSteps: theme.validationSteps,
-      priorityScore: scoreResult.score,
-      scoreBreakdown: scoreResult.breakdown,
-      tags: [theme.category, 'AI Opportunity', 'Validation Ready'],
-      status: 'validating',
-      createdAt: new Date().toISOString(),
-    });
-  }
-
-  return opportunities;
+function buildOpportunity(
+  theme: ComplaintTheme,
+  narrative?: z.infer<typeof opportunityNarrativeSchema>,
+  provenance: 'ai' | 'calculated' = 'calculated',
+): Opportunity {
+  const reviewIds = [...new Set(theme.supportingReviewIds || [])];
+  const scoreResult = calculateOpportunityScore({
+    severity: theme.severity,
+    complaintFrequency: reviewIds.length,
+    latestReviewDate: theme.latestDate,
+    affectedAppCount: theme.affectedApps.length,
+  });
+  return {
+    id: `opp_${provenance}_${theme.id}`,
+    title: narrative?.title || `Product opportunity: ${theme.title}`,
+    problemStatement: theme.summary,
+    targetUser: narrative?.targetUser || 'Users represented by the linked collected review evidence.',
+    supportingAppIds: [...new Set(theme.affectedApps)],
+    supportingAppNames: [...new Set(theme.affectedAppNames)],
+    supportingReviewIds: reviewIds,
+    supportingReviewQuotes: [...new Set(theme.representativeQuotes)].slice(0, 8),
+    complaintFrequency: reviewIds.length,
+    severity: theme.severity,
+    existingSolutions: narrative?.existingSolutions || `Existing alternatives have not been verified from these review excerpts; research them before making a comparison.`,
+    proposedConcept: narrative?.proposedConcept || theme.potentialImprovement,
+    differentiationHypothesis: narrative?.differentiationHypothesis || theme.validationHypothesis,
+    validationQuestions: narrative?.validationQuestions || [
+      'How often does this reported issue affect your work?',
+      'What workaround or alternative do you use today?',
+      'What evidence would make you consider a different solution?',
+    ],
+    nextSteps: narrative?.nextSteps || theme.validationSteps,
+    priorityScore: scoreResult.score,
+    scoreBreakdown: scoreResult.breakdown,
+    tags: [...new Set([theme.category, ...(narrative?.tags || []), provenance === 'ai' ? 'AI hypothesis' : 'Evidence-derived'])].slice(0, 12),
+    status: 'validating',
+    provenance,
+    createdAt: new Date().toISOString(),
+  };
 }
 
-/**
- * AI Outreach Drafter: creates personalized, respectful B2B outreach proposals.
- */
+/** Turns evidence-linked themes into product hypotheses; all counts and citations come from stored reviews. */
+export async function generateOpportunitiesWithAI(
+  themes: ComplaintTheme[],
+  apps: Application[],
+): Promise<Opportunity[]> {
+  const eligibleThemes = themes.filter((theme) => (theme.supportingReviewIds?.length || 0) >= 2 && theme.representativeQuotes.length > 0).slice(0, 3);
+  if (!eligibleThemes.length) return [];
+
+  if (isAIProviderConfigured()) {
+    try {
+      const result = await generateText({
+        model: AI_MODEL_ID,
+        output: Output.array({ element: opportunityNarrativeSchema, minItems: 0, maxItems: 3 }),
+        system: [
+          'Generate product opportunity hypotheses using only the supplied review-backed themes and applications.',
+          'Do not invent customer counts, market size, competitor capabilities, or demand metrics.',
+          'Return the exact supplied themeId for each item. Phrase unverified competitor comparisons as questions to research.',
+        ].join(' '),
+        prompt: JSON.stringify({
+          applications: apps.map((app) => ({ id: app.id, name: app.name, category: app.category })),
+          themes: eligibleThemes.map((theme) => ({
+            themeId: theme.id,
+            title: theme.title,
+            category: theme.category,
+            summary: theme.summary,
+            affectedApps: theme.affectedApps,
+            supportingReviewIds: theme.supportingReviewIds,
+            exactQuotes: theme.representativeQuotes,
+            severity: theme.severity,
+            validationSteps: theme.validationSteps,
+          })),
+        }),
+        temperature: 0.2,
+        maxOutputTokens: 3_000,
+        abortSignal: AbortSignal.timeout(25_000),
+      });
+
+      const themeById = new Map(eligibleThemes.map((theme) => [theme.id, theme]));
+      const usedThemeIds = new Set<string>();
+      const generated = (result.output ?? []).flatMap((candidate) => {
+        const theme = themeById.get(candidate.themeId);
+        if (!theme || usedThemeIds.has(theme.id)) return [];
+        usedThemeIds.add(theme.id);
+        return [buildOpportunity(theme, candidate, 'ai')];
+      });
+      if (generated.length) return generated;
+    } catch {
+      console.warn('[AppPulse AI] Gateway opportunity generation failed validation; using evidence-derived hypotheses.');
+    }
+  }
+
+  return eligibleThemes.map((theme) => buildOpportunity(theme));
+}
+
+const emailDraftSchema = z.object({
+  subject: z.string().min(1).max(120),
+  body: z.string().min(1).max(1_500),
+});
+
+export interface OutreachDraft {
+  subject: string;
+  body: string;
+  generatedBy: 'ai_generated' | 'template';
+}
+
 export async function draftOutreachEmailWithAI(params: {
   contact: Contact;
   opportunity?: Opportunity;
   app?: Application;
   objective: string;
   tone: string;
-}): Promise<{ subject: string; body: string }> {
+}): Promise<OutreachDraft> {
   const { contact, opportunity, app, objective, tone } = params;
   if (!opportunity?.supportingReviewIds?.length || !opportunity.supportingReviewQuotes?.length) {
     throw new Error('An opportunity linked to collected review evidence is required to draft outreach.');
   }
 
-  if (aiClient) {
+  const appName = app?.name || contact.appName || opportunity.supportingAppNames[0] || contact.company;
+  if (isAIProviderConfigured()) {
     try {
-      const prompt = `Draft a highly professional, ethical, and concise B2B cold outreach email.
-Recipient: ${contact.name}, ${contact.title} at ${contact.company} (${contact.website || ''})
-Associated App: ${app?.name || contact.appName || 'Your Application'}
-Product Research Insight: ${opportunity.problemStatement}
-Evidence from collected public reviews: ${JSON.stringify(opportunity.supportingReviewQuotes.slice(0, 2))}
-Proposed Concept: ${opportunity.proposedConcept}
-Outreach Objective: ${objective} (e.g. Product Partnership, Feature Pitch, Advisory / Founder Discovery)
-Preferred Tone: ${tone} (e.g. Consultative, Founder-to-Founder, Value-First, Technical)
-
-Strict Guidelines:
-1. Subject line must be under 9 words, compelling and professional (no spam keywords like FREE, URGENT).
-2. Body must be 3 short paragraphs (under 130 words total).
-3. Plain text format, no markdown asterisks.
-4. Conclude with a clear, low-friction call to action (e.g. 10-minute feedback exchange).
-5. Must include an ethical opt-out line at the very bottom.
-6. Do not invent review counts, metrics, customer behavior, or claims beyond the supplied evidence.
-`;
-
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
+      const result = await generateText({
+        model: AI_MODEL_ID,
+        output: Output.object({ schema: emailDraftSchema }),
+        system: [
+          'Draft a concise, professional B2B message for human review only; AppPulse does not send email.',
+          'Use only the supplied contact, product hypothesis, and exact review excerpts.',
+          'Do not invent measurements, customer counts, outcomes, or claims about the recipient.',
+          'Use a respectful opt-out sentence that asks the recipient to reply to the sender; do not promise automated unsubscribe processing.',
+          'Keep the subject under 9 words and the body under 130 words.',
+        ].join(' '),
+        prompt: JSON.stringify({
+          recipient: { name: contact.name, title: contact.title, company: contact.company },
+          application: appName,
+          objective,
+          tone,
+          opportunity: {
+            title: opportunity.title,
+            problemStatement: opportunity.problemStatement,
+            proposedConcept: opportunity.proposedConcept,
+            evidenceReviewIds: opportunity.supportingReviewIds,
+            exactReviewQuotes: opportunity.supportingReviewQuotes.slice(0, 3),
+          },
+        }),
+        temperature: 0.3,
+        maxOutputTokens: 700,
+        abortSignal: AbortSignal.timeout(20_000),
       });
-
-      const text = response.text || '';
-      const lines = text.split('\n').filter((l) => l.trim().length > 0);
-      let subject = `Research insights on ${app?.name || contact.appName || contact.company}`;
-      let bodyLines = lines;
-
-      if (lines[0]?.toLowerCase().startsWith('subject:')) {
-        subject = lines[0].replace(/subject:\s*/i, '').trim();
-        bodyLines = lines.slice(1);
+      const draft = result.output;
+      if (!draft || draft.subject.trim().split(/\s+/).length > 8 || draft.body.trim().split(/\s+/).length > 130) {
+        throw new Error('Generated outreach draft did not meet the length limits');
       }
-
-      return {
-        subject,
-        body: bodyLines.join('\n\n').trim(),
-      };
+      return { subject: draft.subject.trim(), body: draft.body.trim(), generatedBy: 'ai_generated' };
     } catch {
-      console.warn('[draftOutreachEmailWithAI] Gemini request failed; using an evidence-linked template.');
+      console.warn('[AppPulse AI] Gateway outreach draft failed validation; returning an evidence-linked template.');
     }
   }
 
   return {
-    subject: `Review insight on ${app?.name || contact.appName || contact.company}`,
-    body: `Hi ${contact.name.split(' ')[0] || 'there'},\n\nWe have a product observation based on collected public reviews associated with ${app?.name || opportunity.supportingAppNames[0] || 'your product'}.\n\nThe review-linked opportunity is: ${opportunity.title}. The concept is a hypothesis for discussion, not a measured customer outcome.\n\nWould you be open to a brief feedback exchange?\n\nBest regards,\nAppPulse Research Team\n\nIf you prefer not to receive further messages, reply "Unsubscribe" and your contact will be suppressed.`,
+    subject: `Review insight on ${appName}`,
+    body: `Hi ${contact.name.split(' ')[0] || 'there'},\n\nI am reaching out with a product hypothesis based on public review excerpts associated with ${appName}.\n\nThe research opportunity is: ${opportunity.title}. This is a hypothesis for discussion, not a measured customer outcome.\n\nWould you be open to a brief feedback exchange?\n\nIf you prefer no further contact, please reply to the sender. AppPulse has not sent this draft and does not process replies or unsubscribe events.`,
+    generatedBy: 'template',
   };
 }
 
-/**
- * AI Forecast Engine: Predicts future competitor vulnerabilities and market gaps
- * based on emerging complaint trends, root causes, severity, and update inertia.
- */
 function sourceReviews(reviews: Review[]): Review[] {
-  return reviews.filter((review) => review.provenance !== 'seed' && review.provenance !== 'ai_generated' && review.provenance !== 'calculated');
+  return reviews.filter((review) => review.provenance === 'live_marketplace' || review.provenance === 'imported');
 }
 
 function reviewShareForApps(appIds: string[], reviews: Review[]) {
@@ -314,8 +382,8 @@ function reviewTrendVelocity(reviews: Review[]): 'Accelerating' | 'Steady' | 'De
     .sort((a, b) => a - b);
   if (timestamps.length < 6) return 'Steady';
   const latest = timestamps.at(-1) as number;
-  const recentStart = latest - 30 * 86400000;
-  const previousStart = latest - 60 * 86400000;
+  const recentStart = latest - 30 * 86_400_000;
+  const previousStart = latest - 60 * 86_400_000;
   const recentCount = timestamps.filter((date) => date > recentStart).length;
   const previousCount = timestamps.filter((date) => date > previousStart && date <= recentStart).length;
   if (previousCount < 2) return 'Steady';
@@ -330,6 +398,21 @@ function cleanList(value: unknown, maxItems = 8): string[] {
     : [];
 }
 
+const forecastCandidateSchema = z.object({
+  weaknessTitle: z.string().min(1).max(180),
+  category: z.enum(complaintCategories),
+  rootCauseTrend: z.string().min(1).max(700),
+  forecastedWindowMonths: z.number().int().min(3).max(12),
+  marketGapSummary: z.string().min(1).max(700),
+  suggestedWedgeFeature: z.string().min(1).max(700),
+  severity: z.enum(severityLevels),
+  evidence: z.array(z.object({
+    reviewId: z.string().min(1).max(240),
+    quote: z.string().min(12).max(800),
+  })).max(12),
+  validationMilestones: z.array(z.string().min(1).max(500)).max(8),
+});
+
 export async function forecastFutureWeaknessesWithAI(
   reviews: Review[],
   apps: Application[],
@@ -339,94 +422,86 @@ export async function forecastFutureWeaknessesWithAI(
   const negativeReviews = observedReviews.filter((review) => review.starRating <= 2 && review.text.trim().length >= 12);
   if (!apps.length || negativeReviews.length < 2) return [];
 
-  const appSummaries = apps.slice(0, 8).map((app) => ({
-    id: app.id,
-    name: app.name,
-    category: app.category,
-    updateCadence: app.updateFrequency,
-  }));
-  const complaintSamples = negativeReviews.slice(0, 35).map((review) => ({
-    reviewId: review.id,
-    appId: review.appId,
-    app: review.appName,
-    category: review.classification?.category || 'Unclassified',
-    date: review.reviewDate || 'Not provided',
-    text: review.text.slice(0, 400),
-  }));
-
-  if (aiClient) {
+  if (isAIProviderConfigured()) {
     try {
-      const prompt = `Use only the supplied applications, review excerpts, and themes. Return zero to four product hypotheses, not claims about observed churn, market size, customer counts, release history, or future outcomes. Every hypothesis must name an exact application from the input and cite exact text from at least two distinct supplied review IDs. If evidence is insufficient, return []. Treat root causes and product gaps as hypotheses to validate. Do not output numeric risk values.
-Apps: ${JSON.stringify(appSummaries)}
-Negative review sample: ${JSON.stringify(complaintSamples)}
-Themes: ${JSON.stringify(themes.slice(0, 5).map((theme) => ({ title: theme.title, category: theme.category, supportingReviewIds: theme.supportingReviewIds })))}
-Return strict JSON with objects shaped as:
-[{"weaknessTitle":"...","competitorAppNames":["Exact app name"],"category":"...","rootCauseTrend":"Hypothesis ...","forecastedWindowMonths":6,"marketGapSummary":"Hypothesis ...","suggestedWedgeFeature":"...","severity":"High","evidenceReviewQuotes":["Exact review excerpt","Another exact excerpt"],"validationMilestones":["...","..."]}]`;
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
-        config: { responseMimeType: 'application/json', temperature: 0.2 },
+      const result = await generateText({
+        model: AI_MODEL_ID,
+        output: Output.array({ element: forecastCandidateSchema, minItems: 0, maxItems: 4 }),
+        system: [
+          'Generate product-risk hypotheses from only the supplied applications, review excerpts, and themes.',
+          'Do not claim observed churn, market size, customer counts, release history, or future outcomes.',
+          'Every hypothesis must cite exact contiguous excerpts from at least two distinct supplied review IDs.',
+          'If the evidence is insufficient, return an empty array. Causes, gaps, and future windows are hypotheses to validate.',
+        ].join(' '),
+        prompt: JSON.stringify({
+          applications: apps.slice(0, 8).map((app) => ({ id: app.id, name: app.name, category: app.category, updateCadence: app.updateFrequency })),
+          negativeReviews: negativeReviews.slice(0, 35).map((review) => ({
+            reviewId: review.id,
+            appId: review.appId,
+            appName: review.appName,
+            category: review.classification?.category || 'Unclassified',
+            date: review.reviewDate || 'Not provided',
+            text: review.text.slice(0, 500),
+          })),
+          themes: themes.slice(0, 5).map((theme) => ({ title: theme.title, category: theme.category, supportingReviewIds: theme.supportingReviewIds })),
+        }),
+        temperature: 0.2,
+        maxOutputTokens: 3_500,
+        abortSignal: AbortSignal.timeout(30_000),
       });
-      const parsed: unknown = JSON.parse(response.text?.trim() || '[]');
-      if (Array.isArray(parsed)) {
-        const categories = new Set<PredictedWeakness['category']>([
-          'Bugs & Crashes', 'Missing Features', 'UX & Navigation', 'Pricing & Subscriptions',
-          'Billing & Payments', 'Performance & Reliability', 'Customer Support', 'Privacy & Security',
-          'Compatibility', 'Advertising & Monetization', 'Feature Requests', 'Other',
-        ]);
-        const forecasts = parsed.flatMap((item: unknown, index: number): PredictedWeakness[] => {
-          if (!item || typeof item !== 'object') return [];
-          const candidate = item as Record<string, unknown>;
-          const requestedNames = new Set(cleanList(candidate.competitorAppNames, 8));
-          const namedApps = apps.filter((app) => requestedNames.has(app.name));
-          if (!namedApps.length) return [];
-          const namedAppIds = new Set(namedApps.map((app) => app.id));
-          const candidateQuotes = cleanList(candidate.evidenceReviewQuotes, 12).filter((quote) => quote.length >= 12);
-          const supportingReviews = negativeReviews.filter((review) => namedAppIds.has(review.appId) && candidateQuotes.some((quote) => review.text.includes(quote)));
-          if (supportingReviews.length < 2) return [];
-          const supportingReviewIds = [...new Set(supportingReviews.map((review) => review.id))];
-          const supportingAppIds = [...new Set(supportingReviews.map((review) => review.appId))];
-          const supportedApps = apps.filter((app) => supportingAppIds.includes(app.id));
-          const evidenceReviewQuotes = [...new Set(candidateQuotes.filter((quote) => supportingReviews.some((review) => review.text.includes(quote))))].slice(0, 8);
-          const risk = reviewShareForApps(supportingAppIds, observedReviews);
-          const trendVelocity = reviewTrendVelocity(supportingReviews);
-          const severityValues = ['Critical', 'High', 'Medium', 'Low'] as const;
-          const severity = severityValues.includes(candidate.severity as typeof severityValues[number]) ? candidate.severity as typeof severityValues[number] : 'High';
-          const updateFrequency = supportedApps[0]?.updateFrequency || 'Unknown';
-          const scoreData = calculateFutureOpportunityScore({ trendVelocity, severity, updateFrequency, affectedCompetitorCount: supportingAppIds.length });
-          const requestedWindow = Number(candidate.forecastedWindowMonths);
-          const category = categories.has(candidate.category as PredictedWeakness['category']) ? candidate.category as PredictedWeakness['category'] : 'Other';
-          const hypothesis = (value: unknown, fallback: string) => `${fallback}${typeof value === 'string' && value.trim() ? ` ${value.trim().slice(0, 700)}` : ''}`;
 
-          return [{
-            id: `forecast_ai_${crypto.randomUUID()}`,
-            competitorAppIds: supportingAppIds,
-            competitorAppNames: supportedApps.map((app) => app.name),
-            weaknessTitle: typeof candidate.weaknessTitle === 'string' ? candidate.weaknessTitle.trim().slice(0, 180) : `${category} review pattern`,
-            category,
-            rootCauseTrend: hypothesis(candidate.rootCauseTrend, 'Hypothesis, not an observed cause:'),
-            forecastedWindowMonths: Number.isFinite(requestedWindow) ? Math.max(3, Math.min(12, Math.round(requestedWindow))) : 6,
-            negativeReviewSharePct: risk.negativeReviewSharePct,
-            riskBasis: risk.riskBasis,
-            ratingSampleCount: risk.ratingSampleCount,
-            negativeReviewCount: risk.negativeReviewCount,
-            coverageStartDate: risk.coverageStartDate,
-            coverageEndDate: risk.coverageEndDate,
-            marketGapSummary: hypothesis(candidate.marketGapSummary, 'Potential market gap to validate:'),
-            suggestedWedgeFeature: typeof candidate.suggestedWedgeFeature === 'string' ? candidate.suggestedWedgeFeature.trim().slice(0, 700) : '',
-            futureOpportunityScore: scoreData.futureOpportunityScore,
-            scoreBreakdown: scoreData.scoreBreakdown,
-            evidenceReviewQuotes,
-            supportingReviewIds,
-            validationMilestones: cleanList(candidate.validationMilestones),
-            status: 'forecasted',
-            createdAt: new Date().toISOString(),
-          }];
+      const reviewById = new Map(negativeReviews.map((review) => [review.id, review]));
+      const forecasts = (result.output ?? []).flatMap((candidate, index) => {
+        const citations = candidate.evidence.flatMap((citation) => {
+          const review = reviewById.get(citation.reviewId);
+          return review && review.text.includes(citation.quote.trim())
+            ? [{ review, quote: citation.quote.trim() }]
+            : [];
         });
-        if (forecasts.length) return forecasts;
-      }
+        const supportingReviews = [...new Map(citations.map((entry) => [entry.review.id, entry.review])).values()];
+        if (supportingReviews.length < 2) return [];
+
+        const supportingReviewIds = supportingReviews.map((review) => review.id);
+        const supportingAppIds = [...new Set(supportingReviews.map((review) => review.appId))];
+        const supportingApps = apps.filter((app) => supportingAppIds.includes(app.id));
+        if (!supportingApps.length) return [];
+        const risk = reviewShareForApps(supportingAppIds, observedReviews);
+        const trendVelocity = reviewTrendVelocity(supportingReviews);
+        const scoreData = calculateFutureOpportunityScore({
+          trendVelocity,
+          severity: candidate.severity,
+          updateFrequency: supportingApps[0].updateFrequency || 'Unknown',
+          affectedCompetitorCount: supportingAppIds.length,
+        });
+        return [{
+          id: `forecast_ai_${crypto.randomUUID()}_${index}`,
+          competitorAppIds: supportingAppIds,
+          competitorAppNames: supportingApps.map((app) => app.name),
+          weaknessTitle: candidate.weaknessTitle,
+          category: candidate.category,
+          rootCauseTrend: `Hypothesis to validate: ${candidate.rootCauseTrend}`,
+          forecastedWindowMonths: candidate.forecastedWindowMonths,
+          negativeReviewSharePct: risk.negativeReviewSharePct,
+          riskBasis: risk.riskBasis,
+          ratingSampleCount: risk.ratingSampleCount,
+          negativeReviewCount: risk.negativeReviewCount,
+          coverageStartDate: risk.coverageStartDate,
+          coverageEndDate: risk.coverageEndDate,
+          marketGapSummary: `Potential gap to validate: ${candidate.marketGapSummary}`,
+          suggestedWedgeFeature: candidate.suggestedWedgeFeature,
+          futureOpportunityScore: scoreData.futureOpportunityScore,
+          scoreBreakdown: scoreData.scoreBreakdown,
+          evidenceReviewQuotes: [...new Set(citations.map((entry) => entry.quote))].slice(0, 8),
+          supportingReviewIds,
+          validationMilestones: cleanList(candidate.validationMilestones),
+          status: 'forecasted' as const,
+          provenance: 'ai_generated' as const,
+          createdAt: new Date().toISOString(),
+        }];
+      });
+      if (forecasts.length) return forecasts;
     } catch {
-      console.warn('[forecastFutureWeaknessesWithAI] Provider request or output validation failed; using evidence-only forecast synthesis.');
+      console.warn('[AppPulse AI] Gateway forecast generation failed validation; using evidence-only forecasts.');
     }
   }
 
@@ -447,8 +522,12 @@ function synthesizeFallbackForecasts(apps: Application[], themes: ComplaintTheme
     const evidenceReviewQuotes = quotes.length ? [...new Set(quotes)].slice(0, 8) : relatedReviews.slice(0, 4).map((review) => review.text.slice(0, 220));
     const risk = reviewShareForApps(supportingAppIds, reviews);
     const trendVelocity = reviewTrendVelocity(relatedReviews);
-    const updateFrequency = supportingApps[0].updateFrequency || 'Unknown';
-    const scoreData = calculateFutureOpportunityScore({ trendVelocity, severity: theme.severity, updateFrequency, affectedCompetitorCount: supportingAppIds.length });
+    const scoreData = calculateFutureOpportunityScore({
+      trendVelocity,
+      severity: theme.severity,
+      updateFrequency: supportingApps[0].updateFrequency || 'Unknown',
+      affectedCompetitorCount: supportingAppIds.length,
+    });
 
     result.push({
       id: `forecast_evidence_${crypto.randomUUID()}`,
@@ -472,9 +551,143 @@ function synthesizeFallbackForecasts(apps: Application[], themes: ComplaintTheme
       supportingReviewIds,
       validationMilestones: cleanList(theme.validationSteps),
       status: 'forecasted',
+      provenance: 'calculated',
       createdAt: new Date().toISOString(),
     });
     if (result.length === 4) break;
   }
   return result;
+}
+
+export function buildEvidenceOnlyCompetitorAnalysis(apps: Application[], reviews: Review[]): CompetitorAnalysisResult {
+  const observedReviews = sourceReviews(reviews);
+  const metrics: CompetitorAnalysisMetric[] = apps.map((app) => {
+    const sample = observedReviews.filter((review) => review.appId === app.id).slice(0, 500);
+    const negative = sample.filter((review) => review.starRating <= 2);
+    const complaints: Record<string, number> = {};
+    for (const review of negative) {
+      const category = review.classification?.category || 'Unclassified';
+      complaints[category] = (complaints[category] || 0) + 1;
+    }
+    return {
+      appId: app.id,
+      appName: app.name,
+      sampleReviewCount: sample.length,
+      negativeReviewCount: negative.length,
+      negativeSharePct: sample.length ? Math.round((negative.length / sample.length) * 100) : null,
+      featureRequestCount: sample.filter((review) => review.classification?.isFeatureRequest).length,
+      topComplaints: Object.entries(complaints).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([category, count]) => ({ category, count })),
+    };
+  });
+  const findings: CompetitorAnalysisFinding[] = [];
+  for (const app of apps) {
+    const negative = observedReviews.filter((review) => review.appId === app.id && review.starRating <= 2).slice(0, 3);
+    if (!negative.length) continue;
+    const metric = metrics.find((item) => item.appId === app.id);
+    const category = metric?.topComplaints[0]?.category;
+    findings.push({
+      appId: app.id,
+      appName: app.name,
+      finding: category
+        ? `In the stored sample, ${category} is the most frequent classified category among ${metric?.negativeReviewCount || 0} negative review(s). This is not a marketplace-wide estimate.`
+        : `The stored sample contains ${negative.length} negative review(s). This is not a marketplace-wide estimate.`,
+      evidenceReviewIds: negative.map((review) => review.id),
+      evidenceQuotes: negative.map((review) => review.text.slice(0, 400)),
+    });
+  }
+  const evidenceReviewCount = observedReviews.filter((review) => apps.some((app) => app.id === review.appId)).length;
+  return {
+    appIds: apps.map((app) => app.id),
+    provenance: 'calculated',
+    summary: evidenceReviewCount
+      ? `Evidence-only comparison of ${apps.length} selected application(s) using ${evidenceReviewCount} stored non-seed review(s). Metrics describe this sample only.`
+      : 'No non-seed review evidence is stored for the selected applications; collect or import source reviews before analysis.',
+    metrics,
+    findings,
+    evidenceReviewCount,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+const competitorFindingSchema = z.object({
+  appId: z.string().min(1).max(240),
+  finding: z.string().min(1).max(600),
+  evidence: z.array(z.object({
+    reviewId: z.string().min(1).max(240),
+    quote: z.string().min(12).max(800),
+  })).max(6),
+});
+const competitorAnalysisSchema = z.object({
+  summary: z.string().min(1).max(900),
+  findings: z.array(competitorFindingSchema).max(12),
+});
+
+export async function analyzeCompetitorsWithAI(apps: Application[], reviews: Review[]): Promise<CompetitorAnalysisResult> {
+  const baseline = buildEvidenceOnlyCompetitorAnalysis(apps, reviews);
+  if (!isAIProviderConfigured() || baseline.evidenceReviewCount < 2) return baseline;
+
+  try {
+    const sourceReviewsForApps = sourceReviews(reviews).filter((review) => apps.some((app) => app.id === review.appId));
+    const result = await generateText({
+      model: AI_MODEL_ID,
+      output: Output.object({ schema: competitorAnalysisSchema }),
+      system: [
+        'Analyze the supplied competitors using only the provided non-seed review excerpts and app metadata.',
+        'Every finding must cite exact quotes from at least two distinct supplied review IDs for that same application.',
+        'Do not infer market share, causes, churn, release performance, or marketplace-wide prevalence.',
+        'If evidence is insufficient, return no findings. Phrase all implications as hypotheses to validate.',
+      ].join(' '),
+      prompt: JSON.stringify({
+        applications: apps.map((app) => ({ id: app.id, name: app.name, category: app.category, rating: app.rating, ratingCount: app.ratingCount })),
+        metrics: baseline.metrics,
+        reviews: sourceReviewsForApps.slice(0, 120).map((review) => ({
+          reviewId: review.id,
+          appId: review.appId,
+          rating: review.starRating,
+          category: review.classification?.category || 'Unclassified',
+          text: review.text.slice(0, 500),
+        })),
+      }),
+      temperature: 0.2,
+      maxOutputTokens: 2_500,
+      abortSignal: AbortSignal.timeout(25_000),
+    });
+
+    const output = result.output;
+    if (!output) return baseline;
+    const reviewById = new Map(sourceReviewsForApps.map((review) => [review.id, review]));
+    const validAppIds = new Set(apps.map((app) => app.id));
+    const findings = output.findings.flatMap((candidate) => {
+      if (!validAppIds.has(candidate.appId)) return [];
+      const citations = candidate.evidence.flatMap((citation) => {
+        const review = reviewById.get(citation.reviewId);
+        return review && review.appId === candidate.appId && review.text.includes(citation.quote.trim())
+          ? [{ review, quote: citation.quote.trim() }]
+          : [];
+      });
+      const uniqueCitations = [...new Map(citations.map((item) => [item.review.id, item])).values()];
+      if (uniqueCitations.length < 2) return [];
+      const app = apps.find((item) => item.id === candidate.appId);
+      if (!app) return [];
+      return [{
+        appId: app.id,
+        appName: app.name,
+        finding: candidate.finding,
+        evidenceReviewIds: uniqueCitations.map((item) => item.review.id),
+        evidenceQuotes: uniqueCitations.map((item) => item.quote),
+      }];
+    });
+    if (!findings.length) return baseline;
+    return {
+      ...baseline,
+      provenance: 'ai_generated',
+      model: AI_MODEL_ID,
+      summary: `AI-generated hypotheses grounded in ${baseline.evidenceReviewCount} stored non-seed review(s). Findings apply only to this sample; verify them before acting.`,
+      findings,
+      createdAt: new Date().toISOString(),
+    };
+  } catch {
+    console.warn('[AppPulse AI] Gateway competitor analysis failed validation; using evidence-only comparison.');
+    return baseline;
+  }
 }

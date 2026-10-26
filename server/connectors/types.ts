@@ -38,3 +38,15 @@ export interface MarketplaceConnector {
     reviewCoverage: string;
   }>;
 }
+
+export function getMarketplaceCapabilities(marketplace: Marketplace): { discovery: boolean; reviewCollection: boolean } {
+  switch (marketplace) {
+    case 'steam':
+      return { discovery: true, reviewCollection: true };
+    case 'apple':
+      return { discovery: true, reviewCollection: false };
+    case 'googleplay':
+    case 'microsoft':
+      return { discovery: false, reviewCollection: false };
+  }
+}

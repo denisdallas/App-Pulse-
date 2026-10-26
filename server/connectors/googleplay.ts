@@ -23,7 +23,7 @@ export class GooglePlayConnector implements MarketplaceConnector {
       status: 'unsupported' as const,
       latencyMs: 0,
       message: 'Unsupported: no configured Google Play review connector.',
-      reviewCoverage: 'Public 1-star & 2-star feedback from verified Android app releases',
+      reviewCoverage: 'No Google Play discovery or review provider is configured; no records are collected.'
     };
   }
 }

@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 
 dotenv.config({ path: ['.env.development.local', '.env.local', '.env'] });
 
-const [{ closeDatabase, databaseConfigured }, { migrate }, { processNextJob }] = await Promise.all([
+const [{ closeDatabase, databaseConfigured }, { getMigrationStatus }, { processNextJob }] = await Promise.all([
   import('./db.ts'),
   import('./migrate.ts'),
   import('./job-worker.ts'),
@@ -18,7 +18,10 @@ process.on('SIGTERM', () => { stopping = true; });
 
 async function run(): Promise<void> {
   if (!databaseConfigured()) throw new Error('DATABASE_URL is required to run the background worker');
-  await migrate();
+  const migrationStatus = await getMigrationStatus();
+  if (!migrationStatus.current) {
+    throw new Error('Database migrations are pending; apply the reviewed migrations explicitly before starting the worker.');
+  }
   while (!stopping) {
     try {
       const processed = await processNextJob(workerId);

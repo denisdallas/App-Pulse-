@@ -133,27 +133,44 @@ function cleanReview(input: Review): Review {
   };
 }
 
+function isPublicHttpsSource(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && Boolean(url.hostname) && !url.hostname.endsWith('.invalid') && url.hostname !== 'localhost';
+  } catch {
+    return false;
+  }
+}
+
 function cleanContact(input: Contact): Contact {
   const email = safeText(input.email, 254).toLowerCase();
   if (!/^\S+@\S+\.\S+$/.test(email)) throw new Error('A valid contact email is required');
+  const name = safeText(input.name, 200);
+  const company = safeText(input.company, 240);
+  if (!name || !company) throw new Error('Contact name and company are required');
   const allowedStatuses = new Set<Contact['status']>(['New', 'Contacted', 'In Discussion', 'Converted', 'Do Not Contact']);
   const allowedChannels = new Set<Contact['channel']>(['email', 'linkedin', 'contact_form']);
   const allowedBasis = new Set<Contact['consentBasis']>(['Legitimate Interest (B2B)', 'Public Publisher Info', 'Inquiry Request', 'Unverified']);
+  const consentBasis = allowedBasis.has(input.consentBasis) ? input.consentBasis : 'Unverified';
+  const sourceUrl = safeText(input.sourceUrl, 2048);
+  if (consentBasis !== 'Unverified' && !isPublicHttpsSource(sourceUrl)) {
+    throw new Error('A public HTTPS source URL is required before recording a verified contact basis');
+  }
   return {
     id: safeId(input.id),
-    name: safeText(input.name, 200),
+    name,
     title: safeText(input.title, 200),
-    company: safeText(input.company, 240),
+    company,
     email,
     phone: safeText(input.phone, 80) || undefined,
     website: safeText(input.website, 2048) || undefined,
     channel: allowedChannels.has(input.channel) ? input.channel : 'email',
-    sourceUrl: safeText(input.sourceUrl, 2048),
+    sourceUrl,
     appId: safeText(input.appId, 240) || undefined,
     appName: safeText(input.appName, 240) || undefined,
     opportunityId: safeText(input.opportunityId, 240) || undefined,
     status: allowedStatuses.has(input.status) ? input.status : 'New',
-    consentBasis: allowedBasis.has(input.consentBasis) ? input.consentBasis : 'Unverified',
+    consentBasis,
     notes: safeText(input.notes, 2000) || undefined,
     createdAt: safeDate(input.createdAt),
   };
@@ -197,6 +214,7 @@ function cleanOpportunity(input: Opportunity): Opportunity {
     },
     tags: Array.isArray(input.tags) ? input.tags.filter((value): value is string => typeof value === 'string').slice(0, 40).map((value) => value.slice(0, 80)) : [],
     status: statuses.has(input.status) ? input.status : 'draft',
+    provenance: input.provenance === 'seed' || input.provenance === 'ai' || input.provenance === 'calculated' ? input.provenance : 'calculated',
     createdAt: safeDate(input.createdAt),
   };
 }
@@ -373,7 +391,8 @@ export class WorkspaceDomainStore {
            ON CONFLICT (workspace_id,id) DO UPDATE SET
              marketplace=EXCLUDED.marketplace, source_id=EXCLUDED.source_id, name=EXCLUDED.name,
              publisher=EXCLUDED.publisher, source_url=EXCLUDED.source_url, provenance=EXCLUDED.provenance,
-             metadata=EXCLUDED.metadata, payload=EXCLUDED.payload`,
+             metadata=EXCLUDED.metadata || jsonb_build_object('collectionCursors',COALESCE(applications.metadata->'collectionCursors','{}'::jsonb)),
+             payload=EXCLUDED.payload`,
           [app.id, actor.workspaceId, app.marketplace, app.name, app.publisher, app.storeUrl || null, provenance, JSON.stringify({ tags: app.tags }), JSON.stringify(app)],
         );
       }
@@ -444,17 +463,42 @@ export class WorkspaceDomainStore {
     return transaction((client) => this.saveReviewsOnClient(client, actor, reviews, provenance));
   }
 
-  async saveCollectedReviews(actor: WorkspaceActor, appId: string, inputs: Review[]): Promise<{ inserted: number; duplicates: number }> {
+  async getCollectionCursor(actor: WorkspaceActor, appId: string, negativeOnly: boolean): Promise<string | undefined> {
+    const rows = await query<{ metadata: unknown }>(
+      'SELECT metadata FROM applications WHERE workspace_id=$1 AND id=$2 LIMIT 1',
+      [actor.workspaceId, safeId(appId)],
+    );
+    if (!rows[0]) throw new WorkspaceRecordNotFound();
+    const metadata = asPayload<Record<string, unknown>>(rows[0].metadata);
+    const cursors = metadata?.collectionCursors;
+    if (!cursors || typeof cursors !== 'object') return undefined;
+    const cursor = (cursors as Record<string, unknown>)[negativeOnly ? 'negative' : 'all'];
+    return typeof cursor === 'string' && cursor.length <= 2_000 ? cursor : undefined;
+  }
+
+  async saveCollectedReviews(
+    actor: WorkspaceActor,
+    appId: string,
+    inputs: Review[],
+    nextCursor?: string,
+    negativeOnly = false,
+  ): Promise<{ inserted: number; duplicates: number }> {
     if (!Array.isArray(inputs) || inputs.length > 1000) throw new Error('Review batch exceeds the allowed size');
     const reviews = inputs.map(cleanReview);
     return transaction(async (client) => {
       const saved = await this.saveReviewsOnClient(client, actor, reviews, 'live');
+      const cursorKey = negativeOnly ? 'negative' : 'all';
       const application = await client.query<{ id: string }>(
-        'UPDATE applications SET last_collected_at=NOW() WHERE workspace_id=$1 AND id=$2 RETURNING id',
-        [actor.workspaceId, safeId(appId)],
+        `UPDATE applications
+         SET last_collected_at=NOW(),
+             metadata=COALESCE(metadata,'{}'::jsonb) || jsonb_build_object(
+               'collectionCursors',COALESCE(metadata->'collectionCursors','{}'::jsonb) || jsonb_build_object($3,$4)
+             )
+         WHERE workspace_id=$1 AND id=$2 RETURNING id`,
+        [actor.workspaceId, safeId(appId), cursorKey, nextCursor || null],
       );
       if (!application.rows[0]) throw new WorkspaceRecordNotFound();
-      await audit(client, actor, 'COLLECTION_COMPLETED', 'Application', appId, { inserted: saved.inserted, duplicates: saved.duplicates });
+      await audit(client, actor, 'COLLECTION_COMPLETED', 'Application', appId, { inserted: saved.inserted, duplicates: saved.duplicates, hasMore: Boolean(nextCursor) });
       return saved;
     });
   }
@@ -634,10 +678,10 @@ export class WorkspaceDomainStore {
     opportunity.scoreBreakdown = score.breakdown;
     await client.query(
       `INSERT INTO opportunities(id,workspace_id,title,problem_statement,provenance,score,evidence,payload)
-       VALUES ($1,$2,$3,$4,'calculated',$5,$6::jsonb,$7::jsonb)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb)
        ON CONFLICT (workspace_id,id) DO UPDATE SET title=EXCLUDED.title,problem_statement=EXCLUDED.problem_statement,
-         score=EXCLUDED.score,evidence=EXCLUDED.evidence,payload=EXCLUDED.payload`,
-      [opportunity.id, actor.workspaceId, safeText(opportunity.title, 240) || 'Untitled opportunity', safeText(opportunity.problemStatement, 5000), opportunity.priorityScore, JSON.stringify(opportunity.supportingReviewIds), JSON.stringify(opportunity)],
+         provenance=EXCLUDED.provenance,score=EXCLUDED.score,evidence=EXCLUDED.evidence,payload=EXCLUDED.payload`,
+      [opportunity.id, actor.workspaceId, safeText(opportunity.title, 240) || 'Untitled opportunity', safeText(opportunity.problemStatement, 5000), opportunity.provenance || 'calculated', opportunity.priorityScore, JSON.stringify(opportunity.supportingReviewIds), JSON.stringify(opportunity)],
     );
     await replaceRelation(client, 'opportunity_applications', actor.workspaceId, 'opportunity_id', opportunity.id, 'application_id', opportunity.supportingAppIds);
     await replaceRelation(client, 'opportunity_reviews', actor.workspaceId, 'opportunity_id', opportunity.id, 'review_id', opportunity.supportingReviewIds);
@@ -762,18 +806,31 @@ export class WorkspaceDomainStore {
     return rows[0] ? asPayload<Campaign>(rows[0].payload) : undefined;
   }
 
-  async saveCampaign(actor: WorkspaceActor, input: Campaign): Promise<Campaign> {
+  async saveCampaign(actor: WorkspaceActor, input: Campaign, humanApproved = false): Promise<Campaign> {
     const campaign = cleanCampaign(input);
+    if (campaign.status === 'approved' && !humanApproved) throw new Error('Explicit human approval is required before approving a campaign');
+    if (campaign.status === 'approved') {
+      campaign.approvedBy = actor.userId;
+      campaign.approvedAt = new Date().toISOString();
+    }
     return transaction(async (client) => {
       const contactIds = campaign.recipients.map((recipient) => recipient.contactId);
       if (contactIds.length) {
-        const contacts = await client.query<{ id: string; email: string }>(
-          'SELECT id,email FROM contacts WHERE workspace_id=$1 AND id=ANY($2::text[])',
+        const contacts = await client.query<{ id: string; email: string; payload: unknown }>(
+          'SELECT id,email,payload FROM contacts WHERE workspace_id=$1 AND id=ANY($2::text[])',
           [actor.workspaceId, contactIds],
         );
         if (contacts.rows.length !== new Set(contactIds).size) throw new WorkspaceRecordNotFound();
-        const emails = new Map(contacts.rows.map((contact) => [contact.id, contact.email.toLowerCase()]));
-        if (campaign.recipients.some((recipient) => emails.get(recipient.contactId) !== recipient.email)) throw new Error('Campaign recipient email must match its workspace contact');
+        const contactById = new Map(contacts.rows.map((row) => [row.id, { email: row.email.toLowerCase(), contact: asPayload<Contact>(row.payload) }]));
+        if (campaign.recipients.some((recipient) => contactById.get(recipient.contactId)?.email !== recipient.email)) {
+          throw new Error('Campaign recipient email must match its workspace contact');
+        }
+        if (campaign.status === 'approved' && campaign.recipients.some((recipient) => {
+          const contact = contactById.get(recipient.contactId)?.contact;
+          return recipient.status === 'approved' && (!contact || contact.status === 'Do Not Contact' || contact.consentBasis === 'Unverified' || !isPublicHttpsSource(contact.sourceUrl));
+        })) {
+          throw new Error('Every approved recipient needs an eligible contact and a public HTTPS source URL');
+        }
       }
       await client.query(
         `INSERT INTO campaigns(workspace_id,id,status,payload,created_at)
@@ -794,7 +851,7 @@ export class WorkspaceDomainStore {
     });
   }
 
-  async prepareCampaignSend(actor: WorkspaceActor, id: string): Promise<{ status: 'adapter_unavailable'; message: string; blockedRecipients: string[]; campaign: Campaign }> {
+  async prepareCampaignSend(actor: WorkspaceActor, id: string): Promise<{ status: 'adapter_unavailable'; message: string; blockedRecipients: string[]; blockedReasons: { email: string; reason: string }[]; campaign: Campaign }> {
     return transaction(async (client) => {
       const rows = await client.query<{ payload: unknown }>('SELECT payload FROM campaigns WHERE workspace_id=$1 AND id=$2 FOR UPDATE', [actor.workspaceId, id]);
       if (!rows.rows[0]) throw new WorkspaceRecordNotFound();
@@ -806,13 +863,21 @@ export class WorkspaceDomainStore {
       const suppression = suppressionRows.rows.map((row) => asPayload<SuppressionRecord>(row.payload));
       const contacts = new Map(contactRows.rows.map((row) => [row.id, asPayload<Contact>(row.payload)]));
       const blockedRecipients: string[] = [];
+      const blockedReasons: { email: string; reason: string }[] = [];
       campaign.recipients = campaign.recipients.map((recipient) => {
         const contact = contacts.get(recipient.contactId);
         const suppressionMatch = isEmailSuppressed(recipient.email, suppression);
-        const blocked = suppressionMatch.suppressed || !contact || contact.status === 'Do Not Contact' || contact.consentBasis === 'Unverified';
-        if (blocked) {
+        const reason = suppressionMatch.suppressed
+          ? 'Workspace suppression policy'
+          : !contact || contact.status === 'Do Not Contact' || contact.consentBasis === 'Unverified'
+            ? 'Contact consent basis is unverified or withdrawn'
+            : !isPublicHttpsSource(contact.sourceUrl)
+              ? 'A public HTTPS source URL is required'
+              : '';
+        if (reason) {
           blockedRecipients.push(recipient.email);
-          return { ...recipient, status: 'suppressed' as const, failureReason: suppressionMatch.suppressed ? 'Workspace suppression policy' : 'Contact permission is unverified or withdrawn', sentAt: undefined, deliveredAt: undefined };
+          blockedReasons.push({ email: recipient.email, reason });
+          return { ...recipient, status: 'suppressed' as const, failureReason: reason, sentAt: undefined, deliveredAt: undefined };
         }
         return { ...recipient, status: recipient.status === 'approved' ? 'approved' as const : 'pending' as const, sentAt: undefined, deliveredAt: undefined, failureReason: undefined };
       });
@@ -839,8 +904,9 @@ export class WorkspaceDomainStore {
       await audit(client, actor, 'SEND_BLOCKED', 'Campaign', id, { reason: 'No delivery adapter is implemented', suppressedCount: blockedRecipients.length, sentCount: 0 });
       return {
         status: 'adapter_unavailable',
-        message: 'No delivery adapter is implemented; no messages were sent.',
+        message: 'No delivery adapter is implemented; no messages were sent or delivered.',
         blockedRecipients,
+        blockedReasons,
         campaign,
       };
     });
@@ -903,7 +969,7 @@ export class WorkspaceDomainStore {
     });
   }
 
-  async recordExport(actor: WorkspaceActor, format: 'csv' | 'json' | 'pdf', metadata: Record<string, unknown>): Promise<string> {
+  async recordExport(actor: WorkspaceActor, format: 'csv' | 'json' | 'xlsx' | 'pdf', metadata: Record<string, unknown>): Promise<string> {
     const id = `report_${crypto.randomUUID()}`;
     await transaction(async (client) => {
       await client.query(

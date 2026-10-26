@@ -22,7 +22,7 @@ export class MicrosoftStoreConnector implements MarketplaceConnector {
       status: 'unsupported' as const,
       latencyMs: 0,
       message: 'Unsupported: no configured Microsoft Store review connector.',
-      reviewCoverage: 'Windows 10/11 desktop application and enterprise tools reviews',
+      reviewCoverage: 'No Microsoft Store discovery or review provider is configured; no records are collected.'
     };
   }
 }

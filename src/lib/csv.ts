@@ -1,9 +1,10 @@
 /**
  * Escapes a cell for CSV formatting.
  */
-function escapeCsvCell(value: any): string {
+function escapeCsvCell(value: unknown): string {
   if (value === null || value === undefined) return '';
-  const str = String(value);
+  const raw = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  const str = typeof value === 'string' && /^[\t\r ]*[=+\-@]/.test(raw) ? `'${raw}` : raw;
   if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
     return `"${str.replace(/"/g, '""')}"`;
   }

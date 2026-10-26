@@ -3,11 +3,15 @@
   "buildCommand": "bun run build",
   "outputDirectory": "public",
   "functions": {
-    "server.ts": {
+    "api/index.ts": {
       "maxDuration": 60,
       "includeFiles": "server/**/*"
     }
   },
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/index" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ],
   "headers": [
     {
       "source": "/",
