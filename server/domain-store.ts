@@ -283,6 +283,52 @@ async function assertIdsInWorkspace(
   if (rows.rows.length !== uniqueIds.length) throw new WorkspaceRecordNotFound();
 }
 
+async function assertSourceReviewIdsInWorkspace(client: DatabaseClient, workspaceId: string, ids: string[]): Promise<void> {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (!uniqueIds.length) return;
+  const rows = await client.query<{ id: string }>(
+    "SELECT id FROM reviews WHERE workspace_id=$1 AND id=ANY($2::text[]) AND provenance IN ('live','imported')",
+    [workspaceId, uniqueIds],
+  );
+  if (rows.rows.length !== uniqueIds.length) throw new WorkspaceRecordNotFound();
+}
+
+async function assertSourceApplicationIdsInWorkspace(client: DatabaseClient, workspaceId: string, ids: string[]): Promise<void> {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (!uniqueIds.length) return;
+  const rows = await client.query<{ id: string }>(
+    "SELECT id FROM applications WHERE workspace_id=$1 AND id=ANY($2::text[]) AND provenance IN ('live','imported')",
+    [workspaceId, uniqueIds],
+  );
+  if (rows.rows.length !== uniqueIds.length) throw new WorkspaceRecordNotFound();
+}
+
+async function assertSourceThemeIdsInWorkspace(client: DatabaseClient, workspaceId: string, ids: string[]): Promise<void> {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (!uniqueIds.length) return;
+  const rows = await client.query<{ id: string }>(
+    `SELECT t.id FROM complaint_themes t WHERE t.workspace_id=$1 AND t.id=ANY($2::text[]) AND EXISTS (
+      SELECT 1 FROM theme_reviews tr JOIN reviews r ON r.workspace_id=tr.workspace_id AND r.id=tr.review_id
+      WHERE tr.workspace_id=t.workspace_id AND tr.theme_id=t.id AND r.provenance IN ('live','imported')
+    )`,
+    [workspaceId, uniqueIds],
+  );
+  if (rows.rows.length !== uniqueIds.length) throw new WorkspaceRecordNotFound();
+}
+
+async function assertSourceOpportunityIdsInWorkspace(client: DatabaseClient, workspaceId: string, ids: string[]): Promise<void> {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (!uniqueIds.length) return;
+  const rows = await client.query<{ id: string }>(
+    `SELECT o.id FROM opportunities o WHERE o.workspace_id=$1 AND o.id=ANY($2::text[]) AND o.provenance <> 'seed' AND EXISTS (
+      SELECT 1 FROM opportunity_reviews ore JOIN reviews r ON r.workspace_id=ore.workspace_id AND r.id=ore.review_id
+      WHERE ore.workspace_id=o.workspace_id AND ore.opportunity_id=o.id AND r.provenance IN ('live','imported')
+    )`,
+    [workspaceId, uniqueIds],
+  );
+  if (rows.rows.length !== uniqueIds.length) throw new WorkspaceRecordNotFound();
+}
+
 async function replaceRelation(
   client: DatabaseClient,
   table: 'theme_applications' | 'theme_reviews' | 'forecast_applications' | 'forecast_reviews' | 'opportunity_applications' | 'opportunity_reviews' | 'research_project_applications' | 'research_project_reviews' | 'research_project_themes' | 'research_project_opportunities',
@@ -307,6 +353,7 @@ export class WorkspaceDomainStore {
       query<{
         total_apps: string;
         total_reviews: string;
+        all_reviews: string;
         negative_reviews: string;
         total_themes: string;
         total_opportunities: string;
@@ -314,26 +361,35 @@ export class WorkspaceDomainStore {
         active_campaigns: string;
         suppression_count: string;
         live_reviews: string;
+        imported_reviews: string;
       }>(
         `SELECT
-          (SELECT COUNT(*) FROM applications WHERE workspace_id=$1) AS total_apps,
-          (SELECT COUNT(*) FROM reviews WHERE workspace_id=$1) AS total_reviews,
-          (SELECT COUNT(*) FROM reviews WHERE workspace_id=$1 AND rating <= 2) AS negative_reviews,
-          (SELECT COUNT(*) FROM complaint_themes WHERE workspace_id=$1) AS total_themes,
-          (SELECT COUNT(*) FROM opportunities WHERE workspace_id=$1) AS total_opportunities,
+          (SELECT COUNT(*) FROM applications WHERE workspace_id=$1 AND provenance IN ('live','imported')) AS total_apps,
+          (SELECT COUNT(*) FROM reviews WHERE workspace_id=$1 AND provenance IN ('live','imported')) AS total_reviews,
+          (SELECT COUNT(*) FROM reviews WHERE workspace_id=$1) AS all_reviews,
+          (SELECT COUNT(*) FROM reviews WHERE workspace_id=$1 AND provenance IN ('live','imported') AND rating <= 2) AS negative_reviews,
+          (SELECT COUNT(*) FROM complaint_themes t WHERE t.workspace_id=$1 AND EXISTS (
+            SELECT 1 FROM theme_reviews tr JOIN reviews r ON r.workspace_id=tr.workspace_id AND r.id=tr.review_id
+            WHERE tr.workspace_id=t.workspace_id AND tr.theme_id=t.id AND r.provenance IN ('live','imported')
+          )) AS total_themes,
+          (SELECT COUNT(*) FROM opportunities o WHERE o.workspace_id=$1 AND o.provenance <> 'seed' AND EXISTS (
+            SELECT 1 FROM opportunity_reviews ore JOIN reviews r ON r.workspace_id=ore.workspace_id AND r.id=ore.review_id
+            WHERE ore.workspace_id=o.workspace_id AND ore.opportunity_id=o.id AND r.provenance IN ('live','imported')
+          )) AS total_opportunities,
           (SELECT COUNT(*) FROM contacts WHERE workspace_id=$1) AS total_contacts,
           (SELECT COUNT(*) FROM campaigns WHERE workspace_id=$1 AND status <> 'completed') AS active_campaigns,
           (SELECT COUNT(*) FROM suppression_records WHERE workspace_id=$1) AS suppression_count,
-          (SELECT COUNT(*) FROM reviews WHERE workspace_id=$1 AND provenance IN ('live','live_marketplace')) AS live_reviews`,
+          (SELECT COUNT(*) FROM reviews WHERE workspace_id=$1 AND provenance='live') AS live_reviews,
+          (SELECT COUNT(*) FROM reviews WHERE workspace_id=$1 AND provenance='imported') AS imported_reviews`,
         [actor.workspaceId],
       ),
       query<{ category: string; count: string }>(
         `SELECT COALESCE(payload->'classification'->>'category','Other') AS category, COUNT(*) AS count
-         FROM reviews WHERE workspace_id=$1 GROUP BY 1 ORDER BY COUNT(*) DESC`,
+         FROM reviews WHERE workspace_id=$1 AND provenance IN ('live','imported') GROUP BY 1 ORDER BY COUNT(*) DESC`,
         [actor.workspaceId],
       ),
       query<{ marketplace: Marketplace; count: string }>(
-        'SELECT marketplace, COUNT(*) AS count FROM applications WHERE workspace_id=$1 GROUP BY marketplace ORDER BY marketplace',
+        "SELECT marketplace, COUNT(*) AS count FROM applications WHERE workspace_id=$1 AND provenance IN ('live','imported') GROUP BY marketplace ORDER BY marketplace",
         [actor.workspaceId],
       ),
     ]);
@@ -351,12 +407,13 @@ export class WorkspaceDomainStore {
       complaintBreakdown: complaints.map((item) => ({ category: item.category, count: Number(item.count) })),
       marketplacesBreakdown: marketplacesBreakdown.map((item) => ({ marketplace: item.marketplace, count: Number(item.count) })),
       liveReviewCount: Number(row?.live_reviews || 0),
-      demonstrationReviewCount: totalReviews - Number(row?.live_reviews || 0),
+      importedReviewCount: Number(row?.imported_reviews || 0),
+      demonstrationReviewCount: Math.max(0, Number(row?.all_reviews || 0) - totalReviews),
     };
   }
 
   async getApps(actor: WorkspaceActor, filter?: AppDiscoveryFilter): Promise<Application[]> {
-    const rows = await query<{ payload: unknown }>('SELECT payload FROM applications WHERE workspace_id=$1 ORDER BY first_seen_at DESC, id', [actor.workspaceId]);
+    const rows = await query<{ payload: unknown }>("SELECT payload FROM applications WHERE workspace_id=$1 AND provenance IN ('live','imported') ORDER BY first_seen_at DESC, id", [actor.workspaceId]);
     const apps = rows.map((row) => asPayload<Application>(row.payload));
     const q = filter?.query?.trim().toLowerCase();
     return apps.filter((app) => {
@@ -374,7 +431,7 @@ export class WorkspaceDomainStore {
 
   async getAppById(actor: WorkspaceActor, id: string): Promise<Application | undefined> {
     const rows = await query<{ payload: unknown }>(
-      'SELECT payload FROM applications WHERE workspace_id=$1 AND id=$2 LIMIT 1',
+      "SELECT payload FROM applications WHERE workspace_id=$1 AND id=$2 AND provenance IN ('live','imported') LIMIT 1",
       [actor.workspaceId, id],
     );
     return rows[0] ? asPayload<Application>(rows[0].payload) : undefined;
@@ -407,11 +464,14 @@ export class WorkspaceDomainStore {
   }
 
   async getReviews(actor: WorkspaceActor, filter: ReviewFilters = {}): Promise<{ reviews: Review[]; total: number }> {
-    const rows = await query<{ payload: unknown }>(
-      'SELECT payload FROM reviews WHERE workspace_id=$1 ORDER BY review_date DESC NULLS LAST, id DESC LIMIT 25000',
+    const rows = await query<{ payload: unknown; provenance: string }>(
+      "SELECT payload,provenance FROM reviews WHERE workspace_id=$1 AND provenance IN ('live','imported') ORDER BY review_date DESC NULLS LAST, id DESC LIMIT 25000",
       [actor.workspaceId],
     );
-    let reviews = rows.map((row) => asPayload<Review>(row.payload));
+    let reviews = rows.map((row) => {
+      const review = asPayload<Review>(row.payload);
+      return { ...review, provenance: review.provenance || (row.provenance === 'imported' ? 'imported' as const : 'live_marketplace' as const) };
+    });
     if (filter.appId && filter.appId !== 'all') reviews = reviews.filter((review) => review.appId === filter.appId);
     if (filter.marketplace && filter.marketplace !== 'all') reviews = reviews.filter((review) => review.marketplace === filter.marketplace);
     if (filter.negativeOnly) reviews = reviews.filter((review) => review.starRating <= 2);
@@ -440,7 +500,7 @@ export class WorkspaceDomainStore {
     provenance: 'live' | 'imported',
   ): Promise<{ inserted: number; duplicates: number }> {
     const appIds = [...new Set(reviews.map((review) => review.appId))];
-    await assertIdsInWorkspace(client, 'applications', actor.workspaceId, appIds);
+    await assertSourceApplicationIdsInWorkspace(client, actor.workspaceId, appIds);
     let inserted = 0;
     for (const review of reviews) {
       if (review.provenance === 'ai_generated' || review.provenance === 'calculated') throw new Error('Generated review records cannot be persisted as source evidence');
@@ -492,7 +552,7 @@ export class WorkspaceDomainStore {
         `UPDATE applications
          SET last_collected_at=NOW(),
              metadata=COALESCE(metadata,'{}'::jsonb) || jsonb_build_object(
-               'collectionCursors',COALESCE(metadata->'collectionCursors','{}'::jsonb) || jsonb_build_object($3,$4)
+               'collectionCursors',COALESCE(metadata->'collectionCursors','{}'::jsonb) || jsonb_build_object($3::text,$4::text)
              )
          WHERE workspace_id=$1 AND id=$2 RETURNING id`,
         [actor.workspaceId, safeId(appId), cursorKey, nextCursor || null],
@@ -526,8 +586,29 @@ export class WorkspaceDomainStore {
   }
 
   async getThemes(actor: WorkspaceActor): Promise<ComplaintTheme[]> {
-    const rows = await query<{ payload: unknown }>('SELECT payload FROM complaint_themes WHERE workspace_id=$1 ORDER BY created_at DESC, id', [actor.workspaceId]);
-    return rows.map((row) => asPayload<ComplaintTheme>(row.payload));
+    const [rows, reviews] = await Promise.all([
+      query<{ payload: unknown }>('SELECT payload FROM complaint_themes WHERE workspace_id=$1 ORDER BY created_at DESC, id', [actor.workspaceId]),
+      this.getAllReviews(actor, { limit: 25_000 }),
+    ]);
+    const reviewById = new Map(reviews.map((review) => [review.id, review]));
+    return rows.flatMap((row) => {
+      const theme = asPayload<ComplaintTheme>(row.payload);
+      const linked = [...new Set(theme.supportingReviewIds || [])].flatMap((id) => {
+        const review = reviewById.get(id);
+        return review && theme.affectedApps.includes(review.appId) ? [review] : [];
+      });
+      if (linked.length < 2) return [];
+      const quotes = (theme.representativeQuotes || []).filter((quote) => linked.some((review) => review.text.includes(quote)));
+      return [{
+        ...theme,
+        provenance: theme.provenance === 'ai_generated' ? 'ai_generated' as const : 'calculated' as const,
+        supportingReviewIds: linked.map((review) => review.id),
+        representativeQuotes: quotes.length ? [...new Set(quotes)].slice(0, 8) : linked.slice(0, 3).map((review) => review.text.slice(0, 240)),
+        affectedApps: [...new Set(linked.map((review) => review.appId))],
+        affectedAppNames: [...new Set(linked.map((review) => review.appName))],
+        reviewCount: linked.length,
+      }];
+    });
   }
 
   async saveThemes(actor: WorkspaceActor, themes: ComplaintTheme[]): Promise<void> {
@@ -536,8 +617,8 @@ export class WorkspaceDomainStore {
       for (const theme of themes) {
         const payload = { ...theme, affectedApps: [...new Set(theme.affectedApps || [])], supportingReviewIds: [...new Set(theme.supportingReviewIds || [])] };
         const id = safeId(theme.id);
-        await assertIdsInWorkspace(client, 'applications', actor.workspaceId, payload.affectedApps);
-        await assertIdsInWorkspace(client, 'reviews', actor.workspaceId, payload.supportingReviewIds);
+        await assertSourceApplicationIdsInWorkspace(client, actor.workspaceId, payload.affectedApps);
+        await assertSourceReviewIdsInWorkspace(client, actor.workspaceId, payload.supportingReviewIds);
         await client.query(
           `INSERT INTO complaint_themes(workspace_id,id,payload)
            VALUES ($1,$2,$3::jsonb)
@@ -552,8 +633,16 @@ export class WorkspaceDomainStore {
   }
 
   async getForecasts(actor: WorkspaceActor): Promise<PredictedWeakness[]> {
-    const rows = await query<{ payload: unknown }>('SELECT payload FROM predicted_weaknesses WHERE workspace_id=$1 ORDER BY score DESC, created_at DESC', [actor.workspaceId]);
-    return rows.map((row) => asPayload<PredictedWeakness>(row.payload));
+    const [rows, reviews] = await Promise.all([
+      query<{ payload: unknown }>('SELECT payload FROM predicted_weaknesses WHERE workspace_id=$1 ORDER BY score DESC, created_at DESC', [actor.workspaceId]),
+      this.getAllReviews(actor, { limit: 25_000 }),
+    ]);
+    const reviewIds = new Set(reviews.map((review) => review.id));
+    return rows.flatMap((row) => {
+      const forecast = asPayload<PredictedWeakness>(row.payload);
+      const supportingReviewIds = [...new Set(forecast.supportingReviewIds || [])].filter((id) => reviewIds.has(id));
+      return supportingReviewIds.length >= 2 ? [{ ...forecast, supportingReviewIds, provenance: forecast.provenance === 'ai_generated' ? 'ai_generated' as const : 'calculated' as const }] : [];
+    });
   }
 
   async saveForecasts(actor: WorkspaceActor, forecasts: PredictedWeakness[]): Promise<void> {
@@ -568,8 +657,8 @@ export class WorkspaceDomainStore {
     const id = safeId(forecast.id);
     const appIds = [...new Set(forecast.competitorAppIds || [])];
     const reviewIds = [...new Set(forecast.supportingReviewIds || [])];
-    await assertIdsInWorkspace(client, 'applications', actor.workspaceId, appIds);
-    await assertIdsInWorkspace(client, 'reviews', actor.workspaceId, reviewIds);
+    await assertSourceApplicationIdsInWorkspace(client, actor.workspaceId, appIds);
+    await assertSourceReviewIdsInWorkspace(client, actor.workspaceId, reviewIds);
     const payload = { ...forecast, competitorAppIds: appIds, supportingReviewIds: reviewIds, evidenceReviewQuotes: (forecast.evidenceReviewQuotes || []).filter((quote): quote is string => typeof quote === 'string').slice(0, 30) };
     await client.query(
       `INSERT INTO predicted_weaknesses(workspace_id,id,score,payload)
@@ -633,21 +722,33 @@ export class WorkspaceDomainStore {
   }
 
   async getOpportunities(actor: WorkspaceActor): Promise<Opportunity[]> {
-    const rows = await query<{ payload: unknown }>('SELECT payload FROM opportunities WHERE workspace_id=$1 ORDER BY score DESC NULLS LAST, created_at DESC', [actor.workspaceId]);
-    return rows.map((row) => asPayload<Opportunity>(row.payload));
+    const [rows, reviews] = await Promise.all([
+      query<{ payload: unknown; provenance: string }>("SELECT payload,provenance FROM opportunities WHERE workspace_id=$1 AND provenance <> 'seed' ORDER BY score DESC NULLS LAST, created_at DESC", [actor.workspaceId]),
+      this.getAllReviews(actor, { limit: 25_000 }),
+    ]);
+    const reviewById = new Map(reviews.map((review) => [review.id, review]));
+    return rows.flatMap((row) => {
+      const opportunity = asPayload<Opportunity>(row.payload);
+      const linked = [...new Set(opportunity.supportingReviewIds || [])].flatMap((id) => {
+        const review = reviewById.get(id);
+        return review && opportunity.supportingAppIds.includes(review.appId) ? [review] : [];
+      });
+      if (linked.length < 2) return [];
+      const quotes = (opportunity.supportingReviewQuotes || []).filter((quote) => linked.some((review) => review.text.includes(quote)));
+      return [{ ...opportunity, provenance: row.provenance === 'ai' ? 'ai' as const : 'calculated' as const, supportingReviewIds: linked.map((review) => review.id), supportingReviewQuotes: quotes.length ? [...new Set(quotes)].slice(0, 20) : linked.slice(0, 10).map((review) => review.text.slice(0, 240)), complaintFrequency: linked.length }];
+    });
   }
 
   async getOpportunity(actor: WorkspaceActor, id: string): Promise<Opportunity | undefined> {
-    const rows = await query<{ payload: unknown }>('SELECT payload FROM opportunities WHERE workspace_id=$1 AND id=$2 LIMIT 1', [actor.workspaceId, id]);
-    return rows[0] ? asPayload<Opportunity>(rows[0].payload) : undefined;
+    return (await this.getOpportunities(actor)).find((opportunity) => opportunity.id === id);
   }
 
   private async saveOpportunityOnClient(client: DatabaseClient, actor: WorkspaceActor, input: Opportunity): Promise<Opportunity> {
     const opportunity = cleanOpportunity(input);
-    await assertIdsInWorkspace(client, 'applications', actor.workspaceId, opportunity.supportingAppIds);
+    await assertSourceApplicationIdsInWorkspace(client, actor.workspaceId, opportunity.supportingAppIds);
     const reviewEvidence = opportunity.supportingReviewIds.length
       ? await client.query<{ id: string; application_id: string; text: string; review_date: string | null }>(
-          'SELECT id,application_id,body AS text,review_date::text AS review_date FROM reviews WHERE workspace_id=$1 AND id=ANY($2::text[])',
+          "SELECT id,application_id,body AS text,review_date::text AS review_date FROM reviews WHERE workspace_id=$1 AND id=ANY($2::text[]) AND provenance IN ('live','imported')",
           [actor.workspaceId, opportunity.supportingReviewIds],
         )
       : { rows: [] as { id: string; application_id: string; text: string; review_date: string | null }[] };
@@ -657,7 +758,7 @@ export class WorkspaceDomainStore {
     if (opportunity.supportingAppIds.some((appId) => !evidenceAppIds.includes(appId))) throw new WorkspaceRecordNotFound();
     const appIds = evidenceAppIds.length ? evidenceAppIds : opportunity.supportingAppIds;
     const appRows = appIds.length
-      ? await client.query<{ id: string; name: string }>('SELECT id,name FROM applications WHERE workspace_id=$1 AND id=ANY($2::text[])', [actor.workspaceId, appIds])
+      ? await client.query<{ id: string; name: string }>("SELECT id,name FROM applications WHERE workspace_id=$1 AND id=ANY($2::text[]) AND provenance IN ('live','imported')", [actor.workspaceId, appIds])
       : { rows: [] as { id: string; name: string }[] };
     if (appRows.rows.length !== appIds.length) throw new WorkspaceRecordNotFound();
 
@@ -705,8 +806,13 @@ export class WorkspaceDomainStore {
 
   async deleteOpportunity(actor: WorkspaceActor, id: string): Promise<boolean> {
     return transaction(async (client) => {
-      const result = await client.query('DELETE FROM opportunities WHERE workspace_id=$1 AND id=$2', [actor.workspaceId, id]);
-      if (!result.rowCount) return false;
+      const opportunity = await client.query<{ id: string }>('SELECT id FROM opportunities WHERE workspace_id=$1 AND id=$2 FOR UPDATE', [actor.workspaceId, id]);
+      if (!opportunity.rows[0]) return false;
+      await client.query(
+        "UPDATE contacts SET opportunity_id=NULL,payload=payload - 'opportunityId',updated_at=NOW() WHERE workspace_id=$1 AND opportunity_id=$2",
+        [actor.workspaceId, id],
+      );
+      await client.query('DELETE FROM opportunities WHERE workspace_id=$1 AND id=$2', [actor.workspaceId, id]);
       await audit(client, actor, 'DELETE', 'Opportunity', id);
       return true;
     });
@@ -724,8 +830,8 @@ export class WorkspaceDomainStore {
 
   private async saveContactOnClient(client: DatabaseClient, actor: WorkspaceActor, input: Contact): Promise<Contact> {
     const contact = cleanContact(input);
-    if (contact.appId) await assertIdsInWorkspace(client, 'applications', actor.workspaceId, [contact.appId]);
-    if (contact.opportunityId) await assertIdsInWorkspace(client, 'opportunities', actor.workspaceId, [contact.opportunityId]);
+    if (contact.appId) await assertSourceApplicationIdsInWorkspace(client, actor.workspaceId, [contact.appId]);
+    if (contact.opportunityId) await assertSourceOpportunityIdsInWorkspace(client, actor.workspaceId, [contact.opportunityId]);
     await client.query(
       `INSERT INTO contacts(workspace_id,id,email,application_id,opportunity_id,payload,created_at)
        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)
@@ -932,10 +1038,10 @@ export class WorkspaceDomainStore {
       updatedAt: new Date().toISOString(),
     };
     return transaction(async (client) => {
-      await assertIdsInWorkspace(client, 'applications', actor.workspaceId, project.savedAppIds);
-      await assertIdsInWorkspace(client, 'reviews', actor.workspaceId, project.savedReviewIds);
-      await assertIdsInWorkspace(client, 'complaint_themes', actor.workspaceId, project.savedThemeIds);
-      await assertIdsInWorkspace(client, 'opportunities', actor.workspaceId, project.savedOpportunityIds);
+      await assertSourceApplicationIdsInWorkspace(client, actor.workspaceId, project.savedAppIds);
+      await assertSourceReviewIdsInWorkspace(client, actor.workspaceId, project.savedReviewIds);
+      await assertSourceThemeIdsInWorkspace(client, actor.workspaceId, project.savedThemeIds);
+      await assertSourceOpportunityIdsInWorkspace(client, actor.workspaceId, project.savedOpportunityIds);
       await client.query(
         `INSERT INTO research_projects(id,workspace_id,name,description,payload,created_at,updated_at)
          VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7)

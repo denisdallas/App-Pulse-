@@ -4,8 +4,9 @@ import { once } from 'node:events';
 import type { Server } from 'node:http';
 import { after, test } from 'node:test';
 import dotenv from 'dotenv';
-import type { Application, Contact } from '../src/types.ts';
+import type { Application, Campaign, Contact, Review } from '../src/types.ts';
 import type { WorkspaceActor } from '../server/domain-store.ts';
+import ExcelJS from 'exceljs';
 
 dotenv.config({ path: ['.env.development.local', '.env.local', '.env'] });
 
@@ -165,7 +166,13 @@ test('workspace APIs isolate data and durable jobs survive retries and server re
       status: 'active',
       tags: [],
     };
-    await domainStore.saveApps(ownerA.actor, [application], 'imported');
+    const secondApplication: Application = {
+      ...application,
+      id: `app_test_${crypto.randomUUID()}`,
+      name: 'Second PostgreSQL comparison fixture',
+      storeUrl: 'https://example.invalid/apppulse-test-second',
+    };
+    await domainStore.saveApps(ownerA.actor, [application, secondApplication], 'imported');
 
     const contact: Contact = {
       id: `contact_test_${crypto.randomUUID()}`,
@@ -181,6 +188,41 @@ test('workspace APIs isolate data and durable jobs survive retries and server re
       createdAt: new Date().toISOString(),
     };
     await domainStore.saveContact(ownerA.actor, contact);
+    const sourceReviews: Review[] = [
+      {
+        id: `review_test_${crypto.randomUUID()}`,
+        provenance: 'imported',
+        sourceReviewId: `source_${crypto.randomUUID()}`,
+        appId: application.id,
+        appName: application.name,
+        marketplace: application.marketplace,
+        text: '=HYPERLINK("https://example.com","review") The latest update lost saved work.',
+        starRating: 1,
+        ratingScale: 'stars',
+        reviewDate: '2026-06-01T00:00:00.000Z',
+        language: 'en',
+        reviewUrl: application.storeUrl,
+        collectedAt: new Date().toISOString(),
+        fingerprint: '',
+      },
+      {
+        id: `review_test_${crypto.randomUUID()}`,
+        provenance: 'imported',
+        sourceReviewId: `source_${crypto.randomUUID()}`,
+        appId: secondApplication.id,
+        appName: secondApplication.name,
+        marketplace: secondApplication.marketplace,
+        text: 'The newest version crashes during launch and setup.',
+        starRating: 2,
+        ratingScale: 'stars',
+        reviewDate: '2026-06-02T00:00:00.000Z',
+        language: 'en',
+        reviewUrl: secondApplication.storeUrl,
+        collectedAt: new Date().toISOString(),
+        fingerprint: '',
+      },
+    ];
+    await domainStore.saveReviews(ownerA.actor, sourceReviews, 'imported');
 
     const memberToken = crypto.randomBytes(32).toString('base64url');
     const memberTokenHash = crypto.createHmac('sha256', testAuthSecret).update(memberToken).digest('hex');
@@ -217,6 +259,21 @@ test('workspace APIs isolate data and durable jobs survive retries and server re
     const ownAppResponse = await fetch(`${running.baseUrl}/api/apps/${encodeURIComponent(application.id)}`, { headers: { cookie: ownerA.cookie } });
     assert.equal(ownAppResponse.status, 200);
     assert.equal((await ownAppResponse.json() as { app: Application }).app.id, application.id);
+
+    const compareResponse = await fetch(`${running.baseUrl}/api/compare?appIds=${encodeURIComponent(application.id)},${encodeURIComponent(secondApplication.id)}`, { headers: { cookie: ownerA.cookie } });
+    assert.equal(compareResponse.status, 200);
+    const comparison = await compareResponse.json() as { comparison: { appId: string; totalReviewsSampled: number }[] };
+    assert.deepEqual(comparison.comparison.map((item) => item.appId).sort(), [application.id, secondApplication.id].sort());
+    assert.ok(comparison.comparison.every((item) => item.totalReviewsSampled === 1));
+
+    const compareJobResponse = await fetch(`${running.baseUrl}/api/compare/analyze`, {
+      method: 'POST',
+      headers: { cookie: ownerA.cookie, 'content-type': 'application/json', 'Idempotency-Key': `compare_${crypto.randomUUID()}` },
+      body: JSON.stringify({ appIds: [application.id, secondApplication.id] }),
+    });
+    assert.equal(compareJobResponse.status, 202);
+    const compareJobBody = await compareJobResponse.json() as { job: { input: Record<string, unknown> } };
+    assert.equal(compareJobBody.job.input.analysisKind, 'competitor_comparison');
 
     const foreignAppResponse = await fetch(`${running.baseUrl}/api/apps/${encodeURIComponent(application.id)}`, { headers: { cookie: ownerB.cookie } });
     assert.equal(foreignAppResponse.status, 404);
@@ -261,6 +318,74 @@ test('workspace APIs isolate data and durable jobs survive retries and server re
     assert.equal(exportB.status, 200);
     const contactsB = await exportB.json() as Contact[];
     assert.equal(contactsB.some((item) => item.id === contact.id), false);
+
+    const csvReviewExport = await fetch(`${running.baseUrl}/api/export?type=reviews&format=csv`, { headers: { cookie: ownerA.cookie } });
+    assert.equal(csvReviewExport.status, 200);
+    assert.match(await csvReviewExport.text(), /'=HYPERLINK/);
+
+    const xlsxReviewExport = await fetch(`${running.baseUrl}/api/export?type=reviews&format=xlsx`, { headers: { cookie: ownerA.cookie } });
+    assert.equal(xlsxReviewExport.status, 200);
+    assert.match(xlsxReviewExport.headers.get('content-type') || '', /spreadsheetml\.sheet/i);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(await xlsxReviewExport.arrayBuffer());
+    const reviewWorksheet = workbook.worksheets[0];
+    assert.ok(reviewWorksheet);
+    assert.ok(reviewWorksheet.getColumn(6).values.some((value) => typeof value === 'string' && value.startsWith("'=HYPERLINK")));
+    assert.ok(reviewWorksheet.getColumn(4).values.some((value) => typeof value === 'number'));
+
+    const pdfReport = await fetch(`${running.baseUrl}/api/reports/research.pdf?appIds=${encodeURIComponent(application.id)}`, { headers: { cookie: ownerA.cookie } });
+    assert.equal(pdfReport.status, 200);
+    assert.match(pdfReport.headers.get('content-type') || '', /application\/pdf/);
+    assert.match(pdfReport.headers.get('x-apppulse-report-id') || '', /^report_/);
+    assert.equal(Buffer.from(await pdfReport.arrayBuffer()).toString('utf8', 0, 5), '%PDF-');
+
+    const campaign: Campaign = {
+      id: `campaign_${crypto.randomUUID()}`,
+      name: 'Integration draft only',
+      objective: 'product_partnership',
+      tone: 'Consultative',
+      targetCategory: 'test',
+      templateSubject: 'Source-linked test',
+      templateBody: 'This test campaign is never delivered.',
+      recipients: [{
+        contactId: contact.id,
+        email: contact.email,
+        company: contact.company,
+        appName: application.name,
+        personalizedSubject: 'Source-linked test',
+        personalizedBody: 'This test campaign is never delivered.',
+        status: 'approved',
+      }],
+      status: 'approved',
+      stats: { total: 1, approved: 1, sent: 0, delivered: 0, opened: 0, replied: 0, bounced: 0, unsubscribed: 0, suppressed: 0 },
+      createdAt: new Date().toISOString(),
+    };
+    const unapprovedCampaign = await fetch(`${running.baseUrl}/api/campaigns`, {
+      method: 'POST',
+      headers: { cookie: ownerA.cookie, 'content-type': 'application/json' },
+      body: JSON.stringify(campaign),
+    });
+    assert.equal(unapprovedCampaign.status, 409);
+    const approvedCampaignResponse = await fetch(`${running.baseUrl}/api/campaigns`, {
+      method: 'POST',
+      headers: { cookie: ownerA.cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...campaign, humanApproved: true }),
+    });
+    assert.equal(approvedCampaignResponse.status, 200);
+    const savedCampaign = await approvedCampaignResponse.json() as Campaign;
+    assert.equal(savedCampaign.status, 'approved');
+    assert.equal(savedCampaign.approvedBy, ownerA.actor.userId);
+    const sendAttempt = await fetch(`${running.baseUrl}/api/campaigns/${encodeURIComponent(campaign.id)}/send`, {
+      method: 'POST',
+      headers: { cookie: ownerA.cookie },
+    });
+    assert.equal(sendAttempt.status, 200);
+    const sendResult = await sendAttempt.json() as { success: boolean; status: string; sent: number; delivered: number; reasons: string[] };
+    assert.equal(sendResult.success, false);
+    assert.equal(sendResult.status, 'adapter_unavailable');
+    assert.equal(sendResult.sent, 0);
+    assert.equal(sendResult.delivered, 0);
+    assert.match(sendResult.reasons[0] || '', /no delivery adapter/i);
 
     const routeJob = await enqueueJob(ownerA.actor, 'analysis', { appIds: [application.id] }, `route_${crypto.randomUUID()}`);
     const memberApps = await fetch(`${running.baseUrl}/api/apps`, { headers: { cookie: memberCookie } });

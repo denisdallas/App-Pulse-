@@ -18,8 +18,10 @@ export function generateResearchReport(input: ResearchReportInput): Promise<Buff
     document.on('end', () => resolve(Buffer.concat(chunks)));
     document.on('error', reject);
 
-    const liveReviews = input.reviews.filter((review) => review.provenance === 'live_marketplace');
-    const negativeReviews = input.reviews.filter((review) => review.starRating <= 2);
+    const sourceReviews = input.reviews.filter((review) => review.provenance === 'live_marketplace' || review.provenance === 'imported');
+    const liveReviews = sourceReviews.filter((review) => review.provenance === 'live_marketplace');
+    const importedReviews = sourceReviews.filter((review) => review.provenance === 'imported');
+    const negativeReviews = sourceReviews.filter((review) => review.starRating <= 2);
     const counts = new Map<string, number>();
     for (const review of negativeReviews) {
       const category = review.classification?.category || 'Unclassified';
@@ -31,8 +33,8 @@ export function generateResearchReport(input: ResearchReportInput): Promise<Buff
       .text(`Generated ${new Date().toISOString()}${input.projectName ? ` | Project: ${input.projectName}` : ''}`);
     document.moveDown().fontSize(12).fillColor('#0f172a').text('Research scope', { underline: true });
     document.fontSize(10).text(`Applications analyzed: ${input.apps.length}`)
-      .text(`Reviews analyzed: ${input.reviews.length} (${liveReviews.length} live marketplace, ${input.reviews.length - liveReviews.length} demonstration/other)`)
-      .text(`Negative reviews: ${negativeReviews.length} of ${input.reviews.length || 0}`)
+      .text(`Reviews analyzed: ${sourceReviews.length} (${liveReviews.length} live marketplace, ${importedReviews.length} user-imported)`)
+      .text(`Negative reviews: ${negativeReviews.length} of ${sourceReviews.length || 0}`)
       .text(`Marketplaces: ${Array.from(new Set(input.apps.map((app) => app.marketplace))).join(', ') || 'None'}`);
 
     document.moveDown().fontSize(12).text('Complaint themes', { underline: true });
@@ -62,7 +64,7 @@ export function generateResearchReport(input: ResearchReportInput): Promise<Buff
 
     document.addPage();
     document.fontSize(12).fillColor('#0f172a').text('Data limitations', { underline: true });
-    document.fontSize(10).text('This report includes only records currently stored in AppPulse. Demonstration records are labeled by provenance and are not counted as live marketplace retrievals. AI-generated themes and opportunity narratives are hypotheses supported by stored evidence, not proof of market demand.');
+    document.fontSize(10).text('This report summarizes live marketplace records and user-imported records that have stored source provenance. Imported records are not independently verified by AppPulse. Metrics describe only the included sample. AI-generated themes and opportunity narratives are hypotheses linked to review evidence, not proof of market demand.');
     document.moveDown().text('Source links');
     for (const app of input.apps.slice(0, 20)) document.fillColor('#2563eb').text(`${app.name}: ${app.storeUrl}`);
 

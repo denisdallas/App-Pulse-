@@ -1,6 +1,6 @@
 {
   "name": "AppPulse Intelligence",
-  "description": "Multi-platform app review intelligence, competitor research, complaint clustering, and business outreach platform.",
+  "description": "Workspace-scoped app catalog research, source-backed review analysis, and manual contact management with human-reviewed outreach drafts. No automated prospect discovery or email delivery is configured.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_AI_GATEWAY"]
 }

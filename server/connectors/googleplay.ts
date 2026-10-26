@@ -21,7 +21,7 @@ export class GooglePlayConnector implements MarketplaceConnector {
   async getStatus() {
     return {
       status: 'unsupported' as const,
-      latencyMs: 0,
+      latencyMs: null,
       message: 'Unsupported: no configured Google Play review connector.',
       reviewCoverage: 'No Google Play discovery or review provider is configured; no records are collected.'
     };

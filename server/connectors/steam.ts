@@ -5,7 +5,7 @@ const steamHeaders = { 'User-Agent': 'AppPulse-Intelligence/1.0' };
 
 async function fetchSteam(url: string): Promise<Response> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const response = await fetch(url, { headers: steamHeaders, signal: AbortSignal.timeout(10_000) });
+    const response = await fetch(url, { headers: steamHeaders, signal: AbortSignal.timeout(6_000) });
     if ((response.status === 429 || response.status >= 500) && attempt < 2) {
       const retryAfter = Number(response.headers.get('retry-after'));
       const delay = Number.isFinite(retryAfter) && retryAfter > 0

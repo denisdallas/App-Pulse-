@@ -1,5 +1,5 @@
 import type { Application, AppCategory } from '../../src/types.ts';
-import type { MarketplaceConnector, SearchOptions, ReviewFetchOptions, FetchReviewsResult, UnsupportedConnectorError } from './types.ts';
+import type { MarketplaceConnector, SearchOptions, ReviewFetchOptions, FetchReviewsResult } from './types.ts';
 import { UnsupportedConnectorError as ConnectorUnsupportedError } from './types.ts';
 
 function categoryFromAppleGenre(value: unknown): AppCategory {

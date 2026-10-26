@@ -63,7 +63,7 @@ async function connectorStatuses() {
     try {
       connection = await connector.getStatus();
     } catch {
-      connection = { status: 'degraded', latencyMs: 0, message: 'Source health check failed.', reviewCoverage: 'Unavailable' };
+      connection = { status: 'degraded', latencyMs: null, message: 'Source health check failed.', reviewCoverage: 'Unavailable' };
     }
     return {
       marketplace: connector.marketplace,
@@ -228,11 +228,17 @@ app.get(['/api/health', '/api/health/ready'], asyncRoute(async (_req, res) => {
     try {
       await query('SELECT 1');
       reachable = true;
-      const status = await getMigrationStatus();
-      migrations = { current: status.current, pending: status.pending };
-      activeWorkers = await getActiveJobWorkerCount();
     } catch {
       reachable = false;
+    }
+    if (reachable) {
+      try {
+        const status = await getMigrationStatus();
+        migrations = { current: status.current, pending: status.pending };
+        if (status.current) activeWorkers = await getActiveJobWorkerCount().catch(() => 0);
+      } catch {
+        migrations = { current: false, pending: [] };
+      }
     }
   }
   const workerMode = process.env.JOB_EXECUTION_MODE;
@@ -333,7 +339,8 @@ app.get('/api/reports/research.pdf', asyncRoute(async (req, res) => {
   const apps = requestedAppIds.length ? allApps.filter((item) => requestedAppIds.includes(item.id)) : allApps;
   if (requestedAppIds.length && apps.length !== requestedAppIds.length) throw new WorkspaceRecordNotFound();
   const appIds = new Set(apps.map((item) => item.id));
-  const reviews = await domainStore.getAllReviews(actor, { limit: 5000 });
+  const reviews = (await domainStore.getAllReviews(actor, { limit: 5000 }))
+    .filter((review) => review.provenance === 'live_marketplace' || review.provenance === 'imported');
   const scopedReviews = requestedAppIds.length ? reviews.filter((item) => appIds.has(item.appId)) : reviews;
   const themes = (await domainStore.getThemes(actor)).filter((theme) => !requestedAppIds.length || theme.affectedApps.some((appId) => appIds.has(appId)));
   const opportunities = (await domainStore.getOpportunities(actor)).filter((item) => !requestedAppIds.length || item.supportingAppIds.some((appId) => appIds.has(appId)));
@@ -647,7 +654,9 @@ app.post('/api/outreach/draft', asyncRoute(async (req, res) => {
   const contactId = requiredString(req.body?.contactId, 'contactId');
   const contact = await domainStore.getContact(actor, contactId);
   if (!contact) throw new WorkspaceRecordNotFound();
-  if (contact.status === 'Do Not Contact' || contact.consentBasis === 'Unverified') throw new ApiError(403, 'Verify contact provenance and consent before drafting outreach');
+  if (contact.status === 'Do Not Contact' || contact.consentBasis === 'Unverified' || !isPublicHttpsSourceUrl(contact.sourceUrl)) {
+    throw new ApiError(403, 'A non-unverified contact basis and public HTTPS source URL are required before drafting outreach');
+  }
   const opportunityId = requiredString(req.body?.opportunityId, 'opportunityId');
   const opportunity = await domainStore.getOpportunity(actor, opportunityId);
   if (!opportunity || !opportunity.supportingReviewIds.length) throw new ApiError(400, 'An opportunity with collected review evidence is required');
@@ -671,6 +680,9 @@ app.post('/api/outreach/draft', asyncRoute(async (req, res) => {
 
 app.get('/api/campaigns', asyncRoute(async (_req, res) => res.json(await domainStore.getCampaigns(actorFrom(res)))));
 app.post('/api/campaigns', ownerOnly, asyncRoute(async (req, res) => {
+  if (req.body?.status === 'approved' && req.body?.humanApproved !== true) {
+    throw new ApiError(409, 'Explicit human approval is required before saving an approved campaign');
+  }
   const saved = await domainStore.saveCampaign(actorFrom(res), req.body as Campaign, req.body?.humanApproved === true);
   res.json(saved);
 }));
@@ -768,7 +780,8 @@ app.get('/api/export', ownerOnly, asyncRoute(async (req, res) => {
   let output: unknown[];
   let columns: { key: string; header: string }[] = [];
   if (type === 'reviews') {
-    output = await domainStore.getAllReviews(actor, { limit: 5000 });
+    output = (await domainStore.getAllReviews(actor, { limit: 5000 }))
+      .filter((review) => review.provenance === 'live_marketplace' || review.provenance === 'imported');
     columns = [
       { key: 'id', header: 'Review ID' }, { key: 'appName', header: 'App Name' }, { key: 'marketplace', header: 'Marketplace' },
       { key: 'starRating', header: 'Star Rating' }, { key: 'reviewDate', header: 'Review Date' }, { key: 'text', header: 'Review Text' },
@@ -787,7 +800,8 @@ app.get('/api/export', ownerOnly, asyncRoute(async (req, res) => {
     output = await domainStore.getContacts(actor);
     columns = [
       { key: 'name', header: 'Contact Name' }, { key: 'title', header: 'Title' }, { key: 'company', header: 'Company' },
-      { key: 'email', header: 'Email' }, { key: 'website', header: 'Website' }, { key: 'status', header: 'Status' }, { key: 'consentBasis', header: 'Consent Basis' },
+      { key: 'email', header: 'Email' }, { key: 'website', header: 'Website' }, { key: 'sourceUrl', header: 'Source URL' },
+      { key: 'consentBasis', header: 'Consent Basis' }, { key: 'status', header: 'Status' }, { key: 'appName', header: 'Application' }, { key: 'opportunityId', header: 'Opportunity ID' },
     ];
   } else {
     throw new ApiError(400, 'Invalid export type. Use reviews, opportunities, or contacts.');
@@ -797,6 +811,13 @@ app.get('/api/export', ownerOnly, asyncRoute(async (req, res) => {
   if (format === 'json') {
     res.setHeader('Content-Disposition', `attachment; filename="apppulse_${type}.json"`);
     res.json(output);
+    return;
+  }
+  if (format === 'xlsx') {
+    const workbook = await jsonToXlsx(output as Record<string, unknown>[], columns, `AppPulse ${type}`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="apppulse_${type}.xlsx"`);
+    res.send(workbook);
     return;
   }
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');

@@ -40,7 +40,7 @@ async function runCollection(job: DurableJob, actor: WorkspaceActor): Promise<Re
 
   const negativeOnly = job.input.negativeOnly === true;
   const pageLimit = 100;
-  const maxPagesPerJob = 10;
+  const maxPagesPerJob = 2;
   let cursor = await domainStore.getCollectionCursor(actor, app.id, negativeOnly);
   let nextCursor: string | undefined;
   let totalAvailable = 0;
@@ -56,7 +56,14 @@ async function runCollection(job: DurableJob, actor: WorkspaceActor): Promise<Re
     sourceHasMore = Boolean(result.hasMore);
     nextCursor = sourceHasMore ? result.nextCursor : undefined;
     await heartbeatJob(job, Math.min(68, 15 + pagesFetched * 5));
-    if (!sourceHasMore || !nextCursor || nextCursor === cursor) break;
+    if (!sourceHasMore) {
+      nextCursor = undefined;
+      break;
+    }
+    if (!nextCursor || nextCursor === cursor) {
+      nextCursor = undefined;
+      break;
+    }
     cursor = nextCursor;
   }
 
@@ -79,6 +86,7 @@ async function runCollection(job: DurableJob, actor: WorkspaceActor): Promise<Re
     totalAvailable,
     pagesFetched,
     hasMore: Boolean(resumableCursor),
+    paginationIncomplete: sourceHasMore && !resumableCursor,
   };
 }
 

@@ -5,15 +5,11 @@ import {
   UserPlus, 
   Upload, 
   ShieldBan, 
-  CheckCircle2, 
   AlertOctagon, 
   Mail, 
   Trash2, 
   Sparkles, 
-  ExternalLink,
-  Info,
-  CheckSquare,
-  Square
+  ExternalLink
 } from 'lucide-react';
 
 interface OutreachStudioViewProps {
@@ -28,8 +24,9 @@ interface OutreachStudioViewProps {
   onAddSuppression: (emailOrDomain: string, reason?: SuppressionRecord['reason']) => void;
   onRemoveSuppression: (id: string) => void;
   onCreateCampaign: (campaign: Campaign) => void;
+  emailDeliveryReady: boolean;
   onSendCampaign: (campaignId: string) => Promise<{ success: boolean; sent: number; blocked: number; reasons: string[] }>;
-  onGenerateDraft: (params: { contactId: string; opportunityId?: string; appId?: string; objective: string; tone: string }) => Promise<{ subject: string; body: string }>;
+  onGenerateDraft: (params: { contactId: string; opportunityId?: string; appId?: string; objective: string; tone: string }) => Promise<{ subject: string; body: string; generatedBy: 'ai_generated' | 'template' }>;
 }
 
 export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
@@ -44,6 +41,7 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
   onAddSuppression,
   onRemoveSuppression,
   onCreateCampaign,
+  emailDeliveryReady,
   onSendCampaign,
   onGenerateDraft,
 }) => {
@@ -56,6 +54,8 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
   const [contactCompany, setContactCompany] = useState('');
   const [contactEmail, setContactEmail] = useState('');
   const [contactWebsite, setContactWebsite] = useState('');
+  const [contactSourceUrl, setContactSourceUrl] = useState('');
+  const [contactConsentBasis, setContactConsentBasis] = useState<Contact['consentBasis']>('Unverified');
   const [contactAppId, setContactAppId] = useState('');
   const [contactOppId, setContactOppId] = useState('');
 
@@ -71,6 +71,7 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
   const [previewSubject, setPreviewSubject] = useState('');
   const [previewBody, setPreviewBody] = useState('');
+  const [draftGeneratedBy, setDraftGeneratedBy] = useState<'ai_generated' | 'template' | null>(null);
   const [humanApproved, setHumanApproved] = useState(false);
   const [isGeneratingDraft, setIsGeneratingDraft] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -79,34 +80,46 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
   // Suppression Add
   const [suppressInput, setSuppressInput] = useState('');
 
+  const hasPublicSource = (contact: Contact) => contact.sourceUrl.trim().startsWith('https://');
+  const isOutreachEligible = (contact: Contact) => contact.consentBasis !== 'Unverified'
+    && contact.status !== 'Do Not Contact'
+    && hasPublicSource(contact);
+
   const handleCreateContact = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!contactEmail.trim()) return;
+    if (!contactEmail.trim() || !contactName.trim() || !contactCompany.trim()) return;
+    if (contactConsentBasis !== 'Unverified' && !contactSourceUrl.trim().startsWith('https://')) {
+      alert('A public HTTPS source URL is required for a verified contact basis.');
+      return;
+    }
 
     const matchedApp = apps.find((a) => a.id === contactAppId);
-
     const contact: Contact = {
-      id: `cnt_${Date.now()}`,
-      name: contactName || 'Business Contact',
-      title: contactTitle || 'Product Manager',
-      company: contactCompany || 'Software Publisher',
+      id: `cnt_${crypto.randomUUID()}`,
+      name: contactName.trim(),
+      title: contactTitle.trim(),
+      company: contactCompany.trim(),
       email: contactEmail.trim().toLowerCase(),
-      website: contactWebsite,
+      website: contactWebsite.trim() || undefined,
       channel: 'email',
-      sourceUrl: 'Manual Verification',
+      sourceUrl: contactSourceUrl.trim(),
       appId: contactAppId || undefined,
       appName: matchedApp?.name,
       opportunityId: contactOppId || undefined,
       status: 'New',
-      consentBasis: 'Legitimate Interest (B2B)',
+      consentBasis: contactConsentBasis,
       createdAt: new Date().toISOString(),
     };
 
     onSaveContact(contact);
     setIsAddContactModal(false);
     setContactName('');
+    setContactTitle('');
     setContactEmail('');
     setContactCompany('');
+    setContactWebsite('');
+    setContactSourceUrl('');
+    setContactConsentBasis('Unverified');
   };
 
   const handleImportCsvSubmit = async (e: React.FormEvent) => {
@@ -124,6 +137,10 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
     }
     const firstContact = contacts.find((c) => c.id === selectedContactIds[0]);
     if (!firstContact) return;
+    if (!isOutreachEligible(firstContact)) {
+      alert('The selected contact needs a non-unverified consent basis and a public HTTPS source URL before drafting outreach.');
+      return;
+    }
 
     setIsGeneratingDraft(true);
     try {
@@ -136,6 +153,7 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
       });
       setPreviewSubject(draft.subject);
       setPreviewBody(draft.body);
+      setDraftGeneratedBy(draft.generatedBy);
     } catch (err: any) {
       alert(`AI Draft Error: ${err.message}`);
     } finally {
@@ -147,12 +165,16 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
     e.preventDefault();
     if (!campName.trim() || selectedContactIds.length === 0) return;
     if (!humanApproved) {
-      alert('PRD compliance: Human approval is mandatory before creating and dispatching a campaign.');
+      alert('Human review and approval are required before saving this campaign.');
+      return;
+    }
+    const selectedContacts = selectedContactIds.map((id) => contacts.find((contact) => contact.id === id)).filter((contact): contact is Contact => Boolean(contact));
+    if (!selectedContacts.length || selectedContacts.some((contact) => !isOutreachEligible(contact))) {
+      alert('Only contacts with a non-unverified consent basis and public HTTPS source can be approved.');
       return;
     }
 
-    const recipients = selectedContactIds.map((cId) => {
-      const c = contacts.find((item) => item.id === cId)!;
+    const recipients = selectedContacts.map((c) => {
       return {
         contactId: c.id,
         email: c.email,
@@ -199,9 +221,9 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
     setIsSending(true);
     try {
       const res = await onSendCampaign(campaignId);
-      setSendResultNotice(
-        `Campaign dispatched: ${res.sent} delivered, ${res.blocked} suppressed/opted-out.`
-      );
+      setSendResultNotice(res.success
+        ? `Provider accepted ${res.sent} message(s); confirm delivery from provider webhooks.`
+        : `No messages were sent or delivered. ${res.reasons[0] || 'No delivery provider is configured.'} ${res.blocked} recipient(s) were blocked.`);
       setTimeout(() => setSendResultNotice(null), 5000);
     } catch (err: any) {
       alert(`Send Error: ${err.message}`);
@@ -216,19 +238,19 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
       <div className="p-6 rounded-xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
-            <span className="text-[11px] font-semibold text-emerald-400 bg-emerald-950/60 border border-emerald-800/40 px-2 py-0.5 rounded flex items-center gap-1">
-              <Send className="w-3 h-3 text-emerald-400" />
-              Compliant B2B Outreach Engine
-            </span>
-            <span className="text-xs text-slate-400">
-              Zero-spam · Strict suppression enforcement · Human sign-off required
-            </span>
+              <span className="text-[11px] font-semibold text-amber-300 bg-amber-950/40 border border-amber-800/40 px-2 py-0.5 rounded flex items-center gap-1">
+                <AlertOctagon className="w-3 h-3 text-amber-300" />
+                Email delivery unavailable
+              </span>
+              <span className="text-xs text-slate-400">
+                Drafts only · Source-linked contacts · Human review required
+              </span>
           </div>
           <h2 className="text-base font-semibold text-white">
             Targeted Product Outreach & Publisher Partnerships
           </h2>
           <p className="text-xs text-slate-400 max-w-2xl">
-            Pitch product solutions, feature improvements, or acquisition offers directly to verified business decision-makers. No unsolicited author targeting.
+            Organize source-linked business contacts and review evidence. AppPulse does not discover leads or send email; all drafts require human review.
           </p>
         </div>
 
@@ -260,8 +282,8 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
       </div>
 
       {sendResultNotice && (
-        <div className="p-3 rounded-lg bg-emerald-950/80 border border-emerald-700/60 text-xs text-emerald-200 flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+        <div className="p-3 rounded-lg bg-amber-950/60 border border-amber-800/60 text-xs text-amber-200 flex items-center gap-2">
+          <AlertOctagon className="w-4 h-4 text-amber-400" />
           <span>{sendResultNotice}</span>
         </div>
       )}
@@ -276,7 +298,7 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
-          Verified Contacts ({contacts.length})
+          Contacts ({contacts.length})
         </button>
         <button
           onClick={() => setActiveTab('campaigns')}
@@ -310,8 +332,8 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
                   <tr>
                     <th className="py-3 px-4">Contact & Title</th>
                     <th className="py-3 px-4">Company & App</th>
-                    <th className="py-3 px-4">Email Channel</th>
-                    <th className="py-3 px-4">Consent Basis</th>
+                    <th className="py-3 px-4">Email</th>
+                    <th className="py-3 px-4">Source / Basis</th>
                     <th className="py-3 px-4">Status</th>
                     <th className="py-3 px-4 text-right">Actions</th>
                   </tr>
@@ -327,11 +349,10 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
                         <div className="text-slate-200 font-medium">{contact.company}</div>
                         <div className="text-[11px] text-slate-400">{contact.appName || 'Direct Publisher'}</div>
                       </td>
-                      <td className="py-3.5 px-4 font-mono text-slate-300">
-                        {contact.email}
-                      </td>
-                      <td className="py-3.5 px-4 text-slate-400 text-[11px]">
-                        {contact.consentBasis}
+                      <td className="py-3.5 px-4 font-mono text-slate-300">{contact.email}</td>
+                      <td className="py-3.5 px-4 text-[11px]">
+                        <div className={contact.consentBasis === 'Unverified' ? 'text-amber-300' : 'text-slate-300'}>{contact.consentBasis}</div>
+                        {contact.sourceUrl.startsWith('https://') ? <a href={contact.sourceUrl} target="_blank" rel="noreferrer" className="mt-0.5 inline-flex max-w-48 items-center gap-1 truncate text-indigo-300 hover:text-indigo-200">Source <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" /></a> : <span className="text-slate-500">No public source</span>}
                       </td>
                       <td className="py-3.5 px-4">
                         <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-800 text-slate-300">
@@ -414,11 +435,12 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
                   {camp.status !== 'completed' && (
                     <button
                       onClick={() => handleSendCampaignNow(camp.id)}
-                      disabled={isSending}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 transition-colors disabled:opacity-50"
+                      disabled={isSending || !emailDeliveryReady}
+                      title={emailDeliveryReady ? 'Send using the configured provider' : 'No delivery provider is configured; this campaign remains a draft.'}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <Send className="w-3.5 h-3.5" />
-                      <span>{isSending ? 'Verifying & Sending...' : 'Dispatch Campaign'}</span>
+                      <span>{isSending ? 'Sending…' : emailDeliveryReady ? 'Dispatch Campaign' : 'Delivery unavailable'}</span>
                     </button>
                   )}
                 </div>
@@ -537,30 +559,29 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
               <div>
                 <label className="block text-slate-400 mb-1">Select Recipients ({selectedContactIds.length} selected)</label>
                 <div className="max-h-32 overflow-y-auto border border-slate-800 rounded-lg divide-y divide-slate-800 bg-slate-850 p-1">
-                  {contacts.map((c) => {
-                    const isChecked = selectedContactIds.includes(c.id);
+                  {contacts.map((contact) => {
+                    const isChecked = selectedContactIds.includes(contact.id);
+                    const eligible = isOutreachEligible(contact);
                     return (
-                      <div
-                        key={c.id}
-                        onClick={() => {
-                          if (isChecked) {
-                            setSelectedContactIds(selectedContactIds.filter((id) => id !== c.id));
-                          } else {
-                            setSelectedContactIds([...selectedContactIds, c.id]);
-                          }
-                        }}
-                        className="p-2 flex items-center justify-between hover:bg-slate-800 cursor-pointer text-xs"
-                      >
-                        <div className="flex items-center gap-2">
-                          {isChecked ? (
-                            <CheckSquare className="w-4 h-4 text-indigo-400" />
-                          ) : (
-                            <Square className="w-4 h-4 text-slate-500" />
-                          )}
-                          <span className="font-medium text-white">{c.name} ({c.company})</span>
-                        </div>
-                        <span className="text-slate-400 font-mono text-[11px]">{c.email}</span>
-                      </div>
+                      <label key={contact.id} className={`flex items-center justify-between gap-3 p-2 text-xs ${eligible ? 'cursor-pointer hover:bg-slate-800' : 'cursor-not-allowed opacity-50'}`}>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            disabled={!eligible}
+                            onChange={() => setSelectedContactIds((current) => isChecked
+                              ? current.filter((id) => id !== contact.id)
+                              : [...current, contact.id])}
+                            aria-label={`Select ${contact.name} at ${contact.company}`}
+                            className="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0"
+                          />
+                          <span className="min-w-0">
+                            <span className="block truncate font-medium text-white">{contact.name} ({contact.company})</span>
+                            <span className={`text-[10px] ${eligible ? 'text-emerald-400' : 'text-amber-400'}`}>{eligible ? 'Source and basis recorded' : 'Not eligible: source or basis missing'}</span>
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-[11px] font-mono text-slate-400">{contact.email}</span>
+                      </label>
                     );
                   })}
                 </div>
@@ -569,7 +590,7 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
               {/* AI Draft Generator */}
               <div className="p-3 rounded-lg bg-slate-800/60 border border-slate-800 space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-200">AI Personalized Draft Generation</span>
+                    <span className="font-semibold text-slate-200">Evidence-linked draft for human review</span>
                   <button
                     type="button"
                     onClick={handleGenerateAIDraft}
@@ -577,10 +598,11 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
                     className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-indigo-300 bg-indigo-950 hover:bg-indigo-900 border border-indigo-800/40 rounded transition-colors disabled:opacity-50"
                   >
                     <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>{isGeneratingDraft ? 'Drafting...' : 'Generate with Gemini'}</span>
+                    <span>{isGeneratingDraft ? 'Drafting…' : 'Generate draft'}</span>
                   </button>
                 </div>
 
+                {draftGeneratedBy && <p className="text-[10px] text-slate-500">Draft source: {draftGeneratedBy === 'ai_generated' ? 'Vercel AI Gateway, evidence-linked' : 'deterministic template'}. Not sent by AppPulse.</p>}
                 <div>
                   <label className="block text-slate-400 mb-1">Subject Template</label>
                   <input
@@ -616,8 +638,8 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
                   className="mt-0.5 rounded border-slate-700 text-indigo-600 focus:ring-0"
                 />
                 <label htmlFor="humanApproval" className="text-slate-300 text-[11px] leading-relaxed cursor-pointer">
-                  <strong className="text-amber-400 font-semibold">Human Approval Gate: </strong>
-                  I confirm that I have reviewed the generated message copy, verified that contacts originate from legitimate public B2B channels, and confirmed that unsubscribe/opt-out instructions are included.
+                  <strong className="text-amber-400 font-semibold">Human review gate: </strong>
+                  I confirm the source URL and contact basis are accurate, suppression has been checked, and I will handle any opt-out manually. Saving this draft does not send it.
                 </label>
               </div>
 
@@ -698,6 +720,33 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
               </div>
 
               <div>
+                <label className="block text-slate-400 mb-1">Public HTTPS source URL</label>
+                <input
+                  type="url"
+                  value={contactSourceUrl}
+                  onChange={(e) => setContactSourceUrl(e.target.value)}
+                  required={contactConsentBasis !== 'Unverified'}
+                  placeholder="https://publisher.example/contact"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-white focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1">Contact basis</label>
+                <select
+                  value={contactConsentBasis}
+                  onChange={(e) => setContactConsentBasis(e.target.value as Contact['consentBasis'])}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-white focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="Unverified">Unverified — not eligible for outreach</option>
+                  <option value="Public Publisher Info">Public publisher information</option>
+                  <option value="Legitimate Interest (B2B)">Legitimate interest (B2B)</option>
+                  <option value="Inquiry Request">Inquiry request</option>
+                </select>
+                <p className="mt-1 text-[10px] text-slate-500">A verified basis requires a public HTTPS source. AppPulse does not verify legal compliance.</p>
+              </div>
+
+              <div>
                 <label className="block text-slate-400 mb-1">Associated Application</label>
                 <select
                   value={contactAppId}
@@ -739,7 +788,7 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
           <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-lg w-full p-6 space-y-4 shadow-xl">
             <h3 className="text-base font-semibold text-white">Import Contacts from CSV</h3>
             <p className="text-xs text-slate-400">
-              Paste standard CSV rows with columns: name, title, company, email, website.
+              Paste CSV rows with name, title, company, email, sourceUrl, consentBasis, and optional website. Imported contacts remain unverified unless a public HTTPS source and recognized basis are supplied.
             </p>
 
             <form onSubmit={handleImportCsvSubmit} className="space-y-3 text-xs">
@@ -748,7 +797,7 @@ export const OutreachStudioView: React.FC<OutreachStudioViewProps> = ({
                 rows={6}
                 value={csvRawText}
                 onChange={(e) => setCsvRawText(e.target.value)}
-                placeholder={`name,title,company,email,website\nJane Doe,Product Lead,Linear Orbit,jane@linear.app,https://linear.app`}
+                placeholder={`name,title,company,email,sourceUrl,consentBasis,website\nJane Doe,Product Lead,Example Co,jane@example.com,https://example.com/team,Public Publisher Info,https://example.com`}
                 className="w-full font-mono bg-slate-800 border border-slate-700 rounded-lg p-3 text-white focus:outline-none focus:border-indigo-500 text-xs"
               />
 

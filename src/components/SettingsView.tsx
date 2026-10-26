@@ -1,258 +1,191 @@
-import React, { useState } from 'react';
-import { AuditLog } from '../types.ts';
-import { 
-  Settings, 
-  Cpu, 
-  CheckCircle2, 
-  AlertTriangle, 
-  Activity, 
-  Download, 
-  FileSpreadsheet, 
-  Clock, 
-  ShieldCheck, 
-  Server
-} from 'lucide-react';
+import React from 'react';
+import type { AuditLog } from '../types.ts';
+import { Activity, AlertTriangle, Clock3, Cpu, Download, FileText, Server, ShieldCheck } from 'lucide-react';
+
+type ConnectorStatus = {
+  marketplace: string;
+  name: string;
+  configuration: string;
+  connectivity: string;
+  capability: string;
+  capabilities: { discovery: boolean; reviewCollection: boolean };
+  latencyMs: number | null;
+  lastTestedAt: string | null;
+  lastSuccessfulRetrievalAt: string | null;
+  message: string;
+  reviewCoverage: string;
+  nextAction: string;
+};
+
+type SettingsData = {
+  connectors?: ConnectorStatus[];
+  ai?: { provider?: string; model?: string; configuration?: string; connectivity?: string; status?: string; nextAction?: string };
+  email?: { provider?: string | null; configuration?: string; connectivity?: string; status?: string; deliveryReady?: boolean; nextAction?: string };
+  prospectDiscovery?: { configuration?: string; status?: string; nextAction?: string };
+  storage?: { configuration?: string; connectivity?: string; migrations?: string; pendingMigrations?: string[]; nextAction?: string };
+  jobs?: { executionMode?: string; configuration?: string; status?: string; activeWorkerCount?: number; nextAction?: string };
+  dataRetention?: { status?: string; nextAction?: string };
+  suppressionCount?: number;
+};
 
 interface SettingsViewProps {
-  settingsData: any;
+  settingsData: SettingsData | null;
   auditLogs: AuditLog[];
-  onExport: (type: 'reviews' | 'opportunities' | 'contacts', format: 'csv' | 'json') => void;
+  onExport: (type: 'reviews' | 'opportunities' | 'contacts', format: 'csv' | 'json' | 'xlsx') => void;
+  onExportPdf: () => void;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({
-  settingsData,
-  auditLogs,
-  onExport,
-}) => {
-  const [retentionDays, setRetentionDays] = useState(90);
+function statusLabel(value?: string): string {
+  return (value || 'unknown').replaceAll('_', ' ');
+}
 
-  const connectors = settingsData?.connectors || {
-    steam: {
-      status: 'operational',
-      latencyMs: 42,
-      message: 'Steam Community Public Reviews API fully operational',
-      reviewCoverage: 'Steam PC games & tools',
-    },
-    googleplay: {
-      status: 'operational',
-      latencyMs: 84,
-      message: 'Google Play Android Store indexed catalog active',
-      reviewCoverage: 'Android Mobile & Tablet reviews',
-    },
-    microsoft: {
-      status: 'operational',
-      latencyMs: 110,
-      message: 'Windows Display Catalog API active',
-      reviewCoverage: 'Windows 10/11 desktop application reviews',
-    },
-  };
+function statusClass(value?: string): string {
+  if (['operational', 'active', 'current', 'reachable', 'runtime_available'].includes(value || '')) {
+    return 'border-emerald-800/50 bg-emerald-950/40 text-emerald-300';
+  }
+  if (['configured_not_tested', 'partially_supported', 'worker_not_observed', 'pending'].includes(value || '')) {
+    return 'border-amber-800/50 bg-amber-950/30 text-amber-300';
+  }
+  return 'border-slate-700 bg-slate-800 text-slate-300';
+}
+
+function StatusBadge({ value }: { value?: string }) {
+  return <span className={`inline-flex rounded border px-2 py-1 text-[10px] font-medium capitalize ${statusClass(value)}`}>{statusLabel(value)}</span>;
+}
+
+function formatTime(value?: string | null): string {
+  if (!value) return 'Not recorded';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Not recorded' : date.toLocaleString();
+}
+
+const exportTypes: { type: 'reviews' | 'opportunities' | 'contacts'; title: string; description: string }[] = [
+  { type: 'reviews', title: 'Stored reviews', description: 'Source IDs, timestamps, provenance, and review text.' },
+  { type: 'opportunities', title: 'Product opportunities', description: 'Evidence-linked hypotheses and calculated scores.' },
+  { type: 'contacts', title: 'Business contacts', description: 'Contact records, consent basis, and sourcing details.' },
+];
+
+export const SettingsView: React.FC<SettingsViewProps> = ({ settingsData, auditLogs, onExport, onExportPdf }) => {
+  const connectors = settingsData?.connectors || [];
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
-      {/* Top Header */}
-      <div className="p-6 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-semibold text-slate-300 bg-slate-800 px-2 py-0.5 rounded flex items-center gap-1">
-            <Settings className="w-3 h-3 text-slate-400" />
-            Infrastructure & Integration Status
-          </span>
-        </div>
-        <h2 className="text-base font-semibold text-white">System Settings & Data Governance</h2>
-        <p className="text-xs text-slate-400 max-w-2xl">
-          Inspect connector health, AI model routing, email delivery verification, data retention rules, and security audit logs.
+    <div className="mx-auto max-w-7xl space-y-6 p-6">
+      <header className="space-y-2 rounded-xl border border-slate-800 bg-slate-900 p-6">
+        <span className="inline-flex items-center gap-1.5 rounded bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-300">
+          <Server className="h-3.5 w-3.5 text-indigo-400" aria-hidden="true" /> Runtime and integration status
+        </span>
+        <h2 className="text-base font-semibold text-white">Settings & data governance</h2>
+        <p className="max-w-3xl text-xs leading-relaxed text-slate-400">
+          Status values come from configured runtime checks. “Not tested” means no successful retrieval is claimed; unsupported sources and unavailable services remain clearly marked.
         </p>
-      </div>
+      </header>
 
-      {/* Grid: Connectors & AI Routing */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Marketplace Connectors Health */}
-        <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-              <Server className="w-4 h-4 text-indigo-400" />
-              <span>Marketplace Review Connectors</span>
-            </h3>
-            <span className="text-[11px] text-emerald-400 flex items-center gap-1">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              All Verified
-            </span>
+      <section className="space-y-4 rounded-xl border border-slate-800 bg-slate-900 p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><Activity className="h-4 w-4 text-indigo-400" aria-hidden="true" />Marketplace connectors</h3>
+            <p className="mt-1 text-xs text-slate-400">Catalog discovery and review collection are separate capabilities.</p>
           </div>
-
-          <div className="space-y-3">
-            {Object.entries(connectors).map(([key, conn]: [string, any]) => (
-              <div key={key} className="p-3 rounded-lg bg-slate-800/40 border border-slate-800 space-y-1.5 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-white capitalize">{key === 'googleplay' ? 'Google Play Store' : key === 'microsoft' ? 'Microsoft Store' : 'Steam'}</span>
-                  <div className="flex items-center gap-2 font-mono text-[11px] tabular-nums">
-                    <span className="text-emerald-400">{conn.latencyMs}ms</span>
-                    <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/40 uppercase text-[10px]">
-                      {conn.status}
-                    </span>
-                  </div>
+          <span className="text-[10px] text-slate-500">{connectors.length} sources checked</span>
+        </div>
+        {connectors.length ? (
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            {connectors.map((connector) => (
+              <article key={connector.marketplace} className="space-y-2 rounded-lg border border-slate-800 bg-slate-950/40 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="text-xs font-semibold text-white">{connector.name}</h4>
+                  <StatusBadge value={connector.connectivity} />
                 </div>
-                <p className="text-[11px] text-slate-400">
-                  {conn.message}
-                </p>
-                <div className="text-[10px] text-slate-500">
-                  Coverage: {conn.reviewCoverage}
+                <div className="flex flex-wrap gap-2 text-[10px]">
+                  <span className={`rounded border px-2 py-1 ${connector.capabilities?.discovery ? 'border-indigo-800/50 bg-indigo-950/40 text-indigo-200' : 'border-slate-800 text-slate-500'}`}>Catalog discovery: {connector.capabilities?.discovery ? 'supported' : 'unavailable'}</span>
+                  <span className={`rounded border px-2 py-1 ${connector.capabilities?.reviewCollection ? 'border-indigo-800/50 bg-indigo-950/40 text-indigo-200' : 'border-slate-800 text-slate-500'}`}>Review collection: {connector.capabilities?.reviewCollection ? 'implemented, not verified' : 'unavailable'}</span>
                 </div>
-              </div>
+                <p className="text-[11px] leading-relaxed text-slate-400">{connector.message}</p>
+                <p className="text-[10px] text-slate-500">Coverage: {connector.reviewCoverage}</p>
+                <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-500">
+                  <span>Probe: {connector.latencyMs === null ? 'not measured' : `${connector.latencyMs} ms`}</span>
+                  <span>Last check: {formatTime(connector.lastTestedAt)}</span>
+                  <span className="col-span-2">Last successful retrieval: {formatTime(connector.lastSuccessfulRetrievalAt)}</span>
+                </div>
+                <p className="border-t border-slate-800 pt-2 text-[11px] text-slate-300">Next: {connector.nextAction}</p>
+              </article>
             ))}
           </div>
-        </div>
+        ) : <p className="rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-xs text-slate-400">Connector status has not loaded; no source is assumed to be healthy.</p>}
+      </section>
 
-        {/* AI & Delivery Configuration */}
-        <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
-          <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-            <Cpu className="w-4 h-4 text-indigo-400" />
-            <span>AI Model & Outreach Delivery</span>
-          </h3>
-
-          <div className="space-y-3 text-xs">
-            <div className="p-3 rounded-lg bg-slate-800/40 border border-slate-800 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-white">Gemini 3.8 Intelligence Model</span>
-                <span className="text-emerald-400 font-mono text-[11px]">gemini-3.8-flash</span>
-              </div>
-              <p className="text-[11px] text-slate-400">
-                Server-side @google/genai SDK configured with User-Agent telemetry. No client-side key exposure.
-              </p>
-            </div>
-
-            <div className="p-3 rounded-lg bg-slate-800/40 border border-slate-800 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-white">Outreach Dispatch Provider</span>
-                <span className="text-slate-300 font-mono text-[11px]">Sandboxed B2B Engine</span>
-              </div>
-              <p className="text-[11px] text-slate-400">
-                Enforces suppression verification, unsubscribe links, and human sign-off prior to delivery.
-              </p>
-            </div>
-
-            <div className="p-3 rounded-lg bg-slate-800/40 border border-slate-800 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-white">Review Retention Policy</span>
-                <span className="text-indigo-400 font-mono font-bold tabular-nums">{retentionDays} Days</span>
-              </div>
-              <input
-                type="range"
-                min="30"
-                max="365"
-                step="30"
-                value={retentionDays}
-                onChange={(e) => setRetentionDays(Number(e.target.value))}
-                className="w-full"
-              />
-            </div>
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <article className="space-y-3 rounded-xl border border-slate-800 bg-slate-900 p-5">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><Cpu className="h-4 w-4 text-indigo-400" aria-hidden="true" />AI analysis</h3>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+            <div><p className="text-xs font-semibold text-white">{settingsData?.ai?.provider || 'AI provider'}</p><p className="mt-1 text-[11px] font-mono text-slate-400">{settingsData?.ai?.model || 'Model not reported'}</p></div>
+            <StatusBadge value={settingsData?.ai?.status} />
           </div>
-        </div>
-      </div>
+          <p className="text-[11px] text-slate-400">Connectivity: {statusLabel(settingsData?.ai?.connectivity)}. Model output is validated against stored source-review IDs; deterministic evidence-only results are used when generation is unavailable.</p>
+          <p className="text-[11px] text-slate-300">Next: {settingsData?.ai?.nextAction || 'Runtime status unavailable.'}</p>
+        </article>
 
-      {/* Export Center */}
-      <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
-        <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-          <Download className="w-4 h-4 text-indigo-400" />
-          <span>Research Data Export Center</span>
-        </h3>
-        <p className="text-xs text-slate-400">
-          Download clean, structured CSV or JSON files with full source attribution, timestamps, and classifications.
-        </p>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
-          <div className="p-3 rounded-lg bg-slate-800/50 border border-slate-800 flex items-center justify-between">
-            <div>
-              <div className="text-xs font-semibold text-white">Negative Reviews</div>
-              <div className="text-[10px] text-slate-400">Verbatim text & ratings</div>
-            </div>
-            <div className="flex gap-1.5">
-              <button
-                onClick={() => onExport('reviews', 'csv')}
-                className="px-2 py-1 text-xs font-mono bg-slate-700 hover:bg-slate-600 text-white rounded"
-              >
-                CSV
-              </button>
-              <button
-                onClick={() => onExport('reviews', 'json')}
-                className="px-2 py-1 text-xs font-mono bg-slate-700 hover:bg-slate-600 text-white rounded"
-              >
-                JSON
-              </button>
-            </div>
+        <article className="space-y-3 rounded-xl border border-slate-800 bg-slate-900 p-5">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><ShieldCheck className="h-4 w-4 text-amber-400" aria-hidden="true" />Outbound email</h3>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+            <div><p className="text-xs font-semibold text-white">{settingsData?.email?.provider || 'No delivery provider'}</p><p className="mt-1 text-[11px] text-slate-400">Delivery is {settingsData?.email?.deliveryReady ? 'enabled by configuration' : 'unavailable'}</p></div>
+            <StatusBadge value={settingsData?.email?.status} />
           </div>
+          <p className="text-[11px] text-slate-400">No email provider is currently implemented or connected. Campaign records are drafts; no send or delivery event is simulated.</p>
+          <p className="text-[11px] text-slate-300">Next: {settingsData?.email?.nextAction || 'Configure an approved delivery provider before enabling dispatch.'}</p>
+        </article>
 
-          <div className="p-3 rounded-lg bg-slate-800/50 border border-slate-800 flex items-center justify-between">
-            <div>
-              <div className="text-xs font-semibold text-white">Product Opportunities</div>
-              <div className="text-[10px] text-slate-400">Priority scores & solutions</div>
-            </div>
-            <div className="flex gap-1.5">
-              <button
-                onClick={() => onExport('opportunities', 'csv')}
-                className="px-2 py-1 text-xs font-mono bg-slate-700 hover:bg-slate-600 text-white rounded"
-              >
-                CSV
-              </button>
-              <button
-                onClick={() => onExport('opportunities', 'json')}
-                className="px-2 py-1 text-xs font-mono bg-slate-700 hover:bg-slate-600 text-white rounded"
-              >
-                JSON
-              </button>
-            </div>
-          </div>
+        <article className="space-y-3 rounded-xl border border-slate-800 bg-slate-900 p-5">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><Server className="h-4 w-4 text-indigo-400" aria-hidden="true" />PostgreSQL persistence</h3>
+          <div className="flex flex-wrap gap-2"><StatusBadge value={settingsData?.storage?.connectivity} /><StatusBadge value={settingsData?.storage?.migrations} /></div>
+          <p className="text-[11px] text-slate-400">Configuration: {statusLabel(settingsData?.storage?.configuration)}. Pending migrations: {settingsData?.storage?.pendingMigrations?.length ? settingsData.storage.pendingMigrations.join(', ') : 'none reported'}.</p>
+          <p className="text-[11px] text-slate-300">Next: {settingsData?.storage?.nextAction || 'Storage status unavailable.'}</p>
+        </article>
 
-          <div className="p-3 rounded-lg bg-slate-800/50 border border-slate-800 flex items-center justify-between">
-            <div>
-              <div className="text-xs font-semibold text-white">Business Contacts</div>
-              <div className="text-[10px] text-slate-400">Publishers & channels</div>
-            </div>
-            <div className="flex gap-1.5">
-              <button
-                onClick={() => onExport('contacts', 'csv')}
-                className="px-2 py-1 text-xs font-mono bg-slate-700 hover:bg-slate-600 text-white rounded"
-              >
-                CSV
-              </button>
-              <button
-                onClick={() => onExport('contacts', 'json')}
-                className="px-2 py-1 text-xs font-mono bg-slate-700 hover:bg-slate-600 text-white rounded"
-              >
-                JSON
-              </button>
-            </div>
-          </div>
+        <article className="space-y-3 rounded-xl border border-slate-800 bg-slate-900 p-5">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><Clock3 className="h-4 w-4 text-indigo-400" aria-hidden="true" />Durable jobs & prospect discovery</h3>
+          <div className="flex flex-wrap items-center gap-2"><StatusBadge value={settingsData?.jobs?.status} /><span className="text-[10px] text-slate-500">Mode: {settingsData?.jobs?.executionMode || 'not configured'} · active workers: {settingsData?.jobs?.activeWorkerCount ?? 0}</span></div>
+          <p className="text-[11px] text-slate-300">Jobs: {settingsData?.jobs?.nextAction || 'Worker status unavailable.'}</p>
+          <p className="text-[11px] text-slate-400">Prospects: {settingsData?.prospectDiscovery?.nextAction || 'No business-prospect source is configured.'}</p>
+        </article>
+      </section>
+
+      <section className="space-y-4 rounded-xl border border-slate-800 bg-slate-900 p-5">
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><Download className="h-4 w-4 text-indigo-400" aria-hidden="true" />Research exports</h3>
+          <p className="mt-1 text-xs text-slate-400">Exports contain workspace-scoped records and their available source attribution.</p>
         </div>
-      </div>
-
-      {/* Security Audit Log */}
-      <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>Security & Compliance Audit Log</span>
-          </h3>
-          <span className="text-[11px] font-mono text-slate-400">{auditLogs.length} events logged</span>
-        </div>
-
-        <div className="max-h-56 overflow-y-auto divide-y divide-slate-800 border border-slate-800 rounded-lg text-xs bg-slate-850">
-          {auditLogs.map((log) => (
-            <div key={log.id} className="p-2.5 flex items-start justify-between gap-4 hover:bg-slate-800/40">
-              <div className="space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-[10px] uppercase font-bold text-indigo-400 bg-indigo-950 px-1.5 py-0.5 rounded">
-                    {log.action}
-                  </span>
-                  <span className="font-medium text-slate-200">{log.entityType}</span>
-                </div>
-                <p className="text-[11px] text-slate-400">{log.details}</p>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          {exportTypes.map((item) => (
+            <article key={item.type} className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/40 p-4">
+              <div><h4 className="text-xs font-semibold text-white">{item.title}</h4><p className="mt-1 text-[10px] text-slate-400">{item.description}</p></div>
+              <div className="flex flex-wrap gap-1.5">
+                {(['csv', 'xlsx', 'json'] as const).map((format) => <button key={format} type="button" onClick={() => onExport(item.type, format)} className="rounded bg-slate-800 px-2.5 py-1 text-[10px] font-mono text-slate-200 transition-colors hover:bg-slate-700">{format.toUpperCase()}</button>)}
               </div>
-              <span className="text-[10px] font-mono text-slate-500 tabular-nums shrink-0">
-                {log.timestamp.slice(11, 19)}
-              </span>
-            </div>
+            </article>
           ))}
+          <article className="flex flex-col justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/40 p-4">
+            <div><h4 className="text-xs font-semibold text-white">Research findings report</h4><p className="mt-1 text-[10px] text-slate-400">PDF summary with source and sample limitations.</p></div>
+            <button type="button" onClick={onExportPdf} className="inline-flex w-fit items-center gap-1.5 rounded bg-indigo-600 px-2.5 py-1.5 text-[10px] font-semibold text-white transition-colors hover:bg-indigo-500"><FileText className="h-3.5 w-3.5" aria-hidden="true" />Download PDF</button>
+          </article>
         </div>
-      </div>
+      </section>
+
+      <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><ShieldCheck className="h-4 w-4 text-indigo-400" aria-hidden="true" />Security & audit events</h3>
+          <span className="text-[10px] font-mono text-slate-500">Suppression entries: {settingsData?.suppressionCount ?? 0} · {auditLogs.length} audit events loaded</span>
+        </div>
+        <div className="mt-3 max-h-64 divide-y divide-slate-800 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/40">
+          {auditLogs.length ? auditLogs.map((log) => (
+            <div key={log.id} className="flex items-start justify-between gap-4 p-3 text-xs">
+              <div><div className="flex flex-wrap items-center gap-2"><span className="rounded bg-indigo-950 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-indigo-300">{log.action}</span><span className="text-slate-300">{log.entityType}</span></div><p className="mt-1 text-[11px] text-slate-400">{log.details}</p></div>
+              <time className="shrink-0 text-[10px] font-mono text-slate-500" dateTime={log.timestamp}>{formatTime(log.timestamp)}</time>
+            </div>
+          )) : <p className="p-4 text-xs text-slate-500">No audit events are available for this workspace.</p>}
+        </div>
+        <p className="mt-3 flex items-start gap-2 text-[11px] text-slate-500"><AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" aria-hidden="true" />Automatic retention/deletion is not configured. {settingsData?.dataRetention?.nextAction || 'Stored records are retained until manually removed where deletion is available.'}</p>
+      </section>
     </div>
   );
 };

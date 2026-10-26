@@ -229,6 +229,7 @@ export interface CollectionJob {
   deduplicatedCount: number;
   pagesFetched?: number;
   hasMore?: boolean;
+  paginationIncomplete?: boolean;
   error?: string;
   startedAt: string;
   completedAt?: string;
@@ -334,5 +335,6 @@ export interface SystemStats {
   complaintBreakdown: { category: string; count: number }[];
   marketplacesBreakdown: { marketplace: Marketplace; count: number }[];
   liveReviewCount?: number;
+  importedReviewCount?: number;
   demonstrationReviewCount?: number;
 }

@@ -20,7 +20,7 @@ export class MicrosoftStoreConnector implements MarketplaceConnector {
   async getStatus() {
     return {
       status: 'unsupported' as const,
-      latencyMs: 0,
+      latencyMs: null,
       message: 'Unsupported: no configured Microsoft Store review connector.',
       reviewCoverage: 'No Microsoft Store discovery or review provider is configured; no records are collected.'
     };

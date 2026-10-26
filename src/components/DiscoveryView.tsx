@@ -24,9 +24,9 @@ interface DiscoveryViewProps {
   apps: Application[];
   selectedCompareIds: string[];
   onToggleCompare: (appId: string) => void;
-  onTriggerCollect: (appId: string) => void;
+  onTriggerCollect: (appId: string) => Promise<void> | void;
   onViewReviews: (appId: string) => void;
-  onSearchOnline: (query: string, marketplace: Marketplace) => Promise<void>;
+  onSearchOnline: (query: string, marketplace: Marketplace | 'all', category?: AppCategory) => Promise<void>;
   isSearchingOnline: boolean;
 }
 
@@ -41,13 +41,15 @@ const CATEGORIES: ('all' | AppCategory)[] = [
   'Healthcare',
   'Education',
   'E-commerce',
+  'Other',
 ];
 
 const MARKETPLACES: { id: 'all' | Marketplace; label: string }[] = [
-  { id: 'all', label: 'All Stores' },
+  { id: 'all', label: 'All supported' },
   { id: 'googleplay', label: 'Google Play' },
   { id: 'steam', label: 'Steam' },
   { id: 'microsoft', label: 'Microsoft Store' },
+  { id: 'apple', label: 'Apple App Store' },
 ];
 
 const UPDATE_FREQUENCIES: ('all' | UpdateFrequency)[] = [
@@ -136,17 +138,17 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
 
   const handleCollect = async (appId: string) => {
     setCollectingAppId(appId);
-    onTriggerCollect(appId);
-    setTimeout(() => {
+    try {
+      await onTriggerCollect(appId);
+    } finally {
       setCollectingAppId(null);
-    }, 2000);
+    }
   };
 
   const handleOnlineSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
-    const targetMkt = selectedMarketplace === 'all' ? 'steam' : selectedMarketplace;
-    await onSearchOnline(searchQuery.trim(), targetMkt);
+    await onSearchOnline(searchQuery.trim(), selectedMarketplace, selectedCategory === 'all' ? undefined : selectedCategory);
   };
 
   const getInitials = (name: string) => {
@@ -210,7 +212,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
               className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors disabled:opacity-50 shrink-0"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isSearchingOnline ? 'animate-spin' : ''}`} />
-              <span>{isSearchingOnline ? 'Querying API...' : 'Live Store Lookup'}</span>
+              <span>{isSearchingOnline ? 'Querying catalog…' : 'Search catalog'}</span>
             </button>
           </div>
         </form>
@@ -385,7 +387,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
                     <div className="text-xs text-slate-400 truncate">{app.publisher}</div>
                     <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mt-1">
                       <span className="capitalize text-slate-300 font-medium">
-                        {app.marketplace === 'googleplay' ? 'Google Play' : app.marketplace === 'steam' ? 'Steam' : 'MS Store'}
+                        {app.marketplace === 'googleplay' ? 'Google Play' : app.marketplace === 'steam' ? 'Steam' : app.marketplace === 'apple' ? 'Apple App Store' : 'Microsoft Store'}
                       </span>
                       <span aria-hidden="true">·</span>
                       <span className="text-indigo-400">{app.category}</span>
@@ -396,14 +398,13 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
                 {/* Rating & Stats Strip */}
                 <div className="flex items-center justify-between text-xs py-2 px-3 rounded-lg bg-slate-800/60 border border-slate-800">
                   <div className="flex items-center gap-1 text-amber-400 font-mono font-bold tabular-nums">
-                    <Star className="w-3.5 h-3.5 fill-amber-400" />
-                    <span>{app.rating.toFixed(1)}</span>
+                    {app.ratingCount > 0 ? <><Star className="w-3.5 h-3.5 fill-amber-400" /><span>{app.rating.toFixed(1)}</span></> : <span className="text-slate-500">Rating n/a</span>}
                   </div>
                   <div className="text-[11px] text-slate-400 font-mono tabular-nums">
-                    {app.ratingCount.toLocaleString()} ratings
+                    {app.ratingCount > 0 ? `${app.ratingCount.toLocaleString()} ratings` : 'Ratings n/a'}
                   </div>
                   <div className="text-[11px] text-slate-400 font-mono tabular-nums">
-                    {app.reviewCount.toLocaleString()} reviews
+                    {app.reviewCount > 0 ? `${app.reviewCount.toLocaleString()} reviews` : app.collectionAvailable ? 'Review count n/a' : 'Review text unavailable'}
                   </div>
                 </div>
 
@@ -411,7 +412,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
                 <div className="flex items-center justify-between text-[11px] px-2 py-1 bg-slate-950/50 rounded border border-slate-800/60 text-slate-400">
                   <div className="flex items-center gap-1 font-mono">
                     <span className="text-slate-400">Version:</span>
-                    <span className="text-indigo-300 font-semibold">{app.currentVersion || '1.0.0'}</span>
+                    <span className="text-indigo-300 font-semibold">{app.currentVersion || 'Not provided'}</span>
                   </div>
                   <div className="flex items-center gap-1">
                     <Clock className="w-3 h-3 text-slate-400" />
@@ -479,12 +480,13 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
                 <div className="flex items-center gap-1.5">
                   <button
                     onClick={() => handleCollect(app.id)}
-                    disabled={isCollecting}
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-amber-300 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-800/40 transition-colors disabled:opacity-50"
-                    title="Ingest public reviews into intelligence store"
+                    disabled={isCollecting || !app.collectionAvailable}
+                    aria-label={app.collectionAvailable ? `Collect public reviews for ${app.name}` : `Review collection unavailable for ${app.name}`}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-amber-300 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-800/40 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                    title={app.collectionAvailable ? 'Queue a real review collection job' : 'This marketplace does not expose a supported review collection source'}
                   >
                     <DownloadCloud className={`w-3.5 h-3.5 ${isCollecting ? 'animate-bounce' : ''}`} />
-                    <span>{isCollecting ? 'Collecting...' : 'Ingest'}</span>
+                    <span>{isCollecting ? 'Collecting…' : app.collectionAvailable ? 'Collect' : 'Unavailable'}</span>
                   </button>
 
                   <a

@@ -12,6 +12,8 @@ import {
   AuditLog, 
   SystemStats,
   Marketplace,
+  AppCategory,
+  CompetitorAnalysisResult,
   PredictedWeakness
 } from './types.ts';
 import { Sidebar, ViewTab } from './components/Sidebar.tsx';
@@ -79,6 +81,9 @@ function toCollectionJob(job: JobSnapshot): CollectionJob {
     progress: job.progress,
     collectedCount: typeof result.collectedCount === 'number' ? result.collectedCount : 0,
     deduplicatedCount: typeof result.deduplicatedCount === 'number' ? result.deduplicatedCount : 0,
+    pagesFetched: typeof result.pagesFetched === 'number' ? result.pagesFetched : undefined,
+    hasMore: typeof result.hasMore === 'boolean' ? result.hasMore : undefined,
+    paginationIncomplete: typeof result.paginationIncomplete === 'boolean' ? result.paginationIncomplete : undefined,
     error: job.error || undefined,
     startedAt: job.startedAt || '',
     completedAt: job.completedAt || undefined,
@@ -100,11 +105,13 @@ export default function App() {
   const [suppression, setSuppression] = useState<SuppressionRecord[]>([]);
   const [projects, setProjects] = useState<ResearchProject[]>([]);
   const [jobs, setJobs] = useState<CollectionJob[]>([]);
+  const [comparisonAnalysis, setComparisonAnalysis] = useState<CompetitorAnalysisResult | null>(null);
+  const [isComparing, setIsComparing] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [settingsData, setSettingsData] = useState<any>(null);
 
   // Cross-view state
-  const [selectedCompareIds, setSelectedCompareIds] = useState<string[]>(['gp_notion', 'gp_clickup']);
+  const [selectedCompareIds, setSelectedCompareIds] = useState<string[]>([]);
   const [selectedReviewAppId, setSelectedReviewAppId] = useState<string>('all');
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isForecasting, setIsForecasting] = useState<boolean>(false);
@@ -145,7 +152,7 @@ export default function App() {
         requestJson<Campaign[]>('/api/campaigns'),
         requestJson<SuppressionRecord[]>('/api/suppression'),
         requestJson<ResearchProject[]>('/api/projects'),
-        requestJson<CollectionJob[]>('/api/jobs'),
+        requestJson<JobSnapshot[]>('/api/jobs'),
         requestJson<AuditLog[]>('/api/audit-logs'),
         requestJson<Record<string, unknown>>('/api/settings'),
       ]);
@@ -160,7 +167,11 @@ export default function App() {
       setCampaigns(campsRes || []);
       setSuppression(suppRes || []);
       setProjects(projRes || []);
-      setJobs(jobsRes || []);
+      setJobs((jobsRes || []).map(toCollectionJob));
+      const latestComparison = (jobsRes || []).find((job) =>
+        job.type === 'analysis' && job.input?.analysisKind === 'competitor_comparison' && job.status === 'completed' && job.result,
+      );
+      setComparisonAnalysis(latestComparison?.result as unknown as CompetitorAnalysisResult || null);
       setAuditLogs(logsRes || []);
       setSettingsData(settingsRes || {});
     } catch (err) {
@@ -179,6 +190,9 @@ export default function App() {
       try {
         const job = await requestJson<JobSnapshot>(`/api/jobs/${encodeURIComponent(jobId)}`);
         upsertJob(job);
+        if (job.status === 'completed' && job.type === 'analysis' && job.input?.analysisKind === 'competitor_comparison' && job.result) {
+          setComparisonAnalysis(job.result as unknown as CompetitorAnalysisResult);
+        }
         if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
           await loadAllData();
           if (job.status !== 'completed') {
@@ -188,7 +202,12 @@ export default function App() {
           } else if (typeof job.result?.count === 'number') {
             showToast(`${label} completed with ${job.result.count} result${job.result.count === 1 ? '' : 's'}.`);
           } else if (typeof job.result?.collectedCount === 'number') {
-            showToast(`Collection completed: ${job.result.collectedCount} new reviews, ${Number(job.result.deduplicatedCount || 0)} duplicates.`);
+            const continuation = job.result.hasMore === true
+              ? ' More pages remain; run collection again to continue.'
+              : job.result.paginationIncomplete === true
+                ? ' The source indicated more data but did not return a usable page cursor.'
+                : '';
+            showToast(`Collection completed: ${job.result.collectedCount} new reviews, ${Number(job.result.deduplicatedCount || 0)} duplicates.${continuation}`);
           } else {
             showToast(`${label} completed.`);
           }
@@ -265,15 +284,18 @@ export default function App() {
     }
   };
 
-  const handleSearchOnline = async (query: string, marketplace: Marketplace) => {
+  const handleSearchOnline = async (query: string, marketplace: Marketplace | 'all', category?: AppCategory) => {
     setIsSearchingOnline(true);
     try {
-      const data = await requestJson<{ count: number }>('/api/apps/search-online', {
+      const data = await requestJson<{ count: number; outcomes: { marketplace: string; status: string; error: string | null }[] }>('/api/apps/search-online', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, marketplace }),
+        body: JSON.stringify({ query, marketplace, category }),
       });
-      showToast(`Saved ${data.count} applications returned by ${marketplace}.`);
+      const failures = data.outcomes.filter((outcome) => outcome.status === 'failed').map((outcome) => outcome.marketplace);
+      showToast(failures.length
+        ? `Saved ${data.count} app(s); search failed for ${failures.join(', ')}.`
+        : `Saved ${data.count} live catalog result(s) from ${marketplace}.`);
       await loadAllData();
     } catch (error) {
       showToast(`Search error: ${error instanceof Error ? error.message : 'Request failed'}`);
@@ -316,6 +338,26 @@ export default function App() {
       showToast(`Forecast error: ${error instanceof Error ? error.message : 'Request failed'}`);
     } finally {
       setIsForecasting(false);
+    }
+  };
+
+  const handleRunCompetitorAnalysis = async () => {
+    if (selectedCompareIds.length < 2 || selectedCompareIds.length > 4) return;
+    setIsComparing(true);
+    setComparisonAnalysis(null);
+    try {
+      const data = await requestJson<{ job: JobSnapshot }>('/api/compare/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+        body: JSON.stringify({ appIds: selectedCompareIds }),
+      });
+      upsertJob(data.job);
+      showToast('Evidence-based competitor comparison queued.');
+      await watchJob(data.job.id, 'Competitor comparison');
+    } catch (error) {
+      showToast(`Comparison error: ${error instanceof Error ? error.message : 'Request failed'}`);
+    } finally {
+      setIsComparing(false);
     }
   };
 
@@ -460,7 +502,7 @@ export default function App() {
       await requestJson<Campaign>('/api/campaigns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(campaign),
+        body: JSON.stringify({ ...campaign, humanApproved: true }),
       });
       await loadAllData();
       showToast(`Campaign "${campaign.name}" created.`);
@@ -483,11 +525,31 @@ export default function App() {
     objective: string;
     tone: string;
   }) => {
-    return requestJson<{ subject: string; body: string }>('/api/outreach/draft', {
+    return requestJson<{ subject: string; body: string; generatedBy: 'ai_generated' | 'template' }>('/api/outreach/draft', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     });
+  };
+
+  const handleExportPdf = async () => {
+    try {
+      const response = await fetch('/api/reports/research.pdf', { credentials: 'same-origin' });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(typeof body.error === 'string' ? body.error : `PDF export failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = 'apppulse_research_report.pdf';
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+      showToast('Research PDF downloaded.');
+    } catch (error) {
+      showToast(`PDF export error: ${error instanceof Error ? error.message : 'Request failed'}`);
+    }
   };
 
   const handleSaveProject = async (proj: ResearchProject) => {
@@ -504,7 +566,7 @@ export default function App() {
     }
   };
 
-  const handleExport = async (type: 'reviews' | 'opportunities' | 'contacts', format: 'csv' | 'json' = 'csv') => {
+  const handleExport = async (type: 'reviews' | 'opportunities' | 'contacts', format: 'csv' | 'json' | 'xlsx' = 'csv') => {
     try {
       const response = await fetch(`/api/export?type=${encodeURIComponent(type)}&format=${encodeURIComponent(format)}`, { credentials: 'same-origin' });
       if (!response.ok) {
@@ -615,7 +677,9 @@ export default function App() {
               allApps={apps}
               selectedCompareIds={selectedCompareIds}
               onToggleCompare={handleToggleCompare}
-              reviews={reviews}
+              analysis={comparisonAnalysis}
+              isAnalyzing={isComparing}
+              onRunAnalysis={handleRunCompetitorAnalysis}
             />
           )}
 
@@ -647,6 +711,7 @@ export default function App() {
               onAddSuppression={handleAddSuppression}
               onRemoveSuppression={handleRemoveSuppression}
               onCreateCampaign={handleCreateCampaign}
+              emailDeliveryReady={settingsData?.email?.deliveryReady === true}
               onSendCampaign={handleSendCampaign}
               onGenerateDraft={handleGenerateDraft}
             />
@@ -668,6 +733,7 @@ export default function App() {
               settingsData={settingsData}
               auditLogs={auditLogs}
               onExport={handleExport}
+              onExportPdf={handleExportPdf}
             />
           )}
         </main>

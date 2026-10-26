@@ -5,10 +5,16 @@ import { generateReviewFingerprint, deduplicateReviews } from '../src/lib/dedup.
 import { isEmailSuppressed, filterSuppressedRecipients } from '../src/lib/suppression.ts';
 import { jsonToCsv, parseCsv } from '../src/lib/csv.ts';
 import { compareVersions, isVersionInRange, calculateFutureOpportunityScore } from '../src/lib/forecast.ts';
-import { Review, SuppressionRecord } from '../src/types.ts';
+import { Application, Review, SuppressionRecord } from '../src/types.ts';
 import { GooglePlayConnector } from '../server/connectors/googleplay.ts';
+import { AppleAppStoreConnector } from '../server/connectors/apple.ts';
+import { SteamConnector } from '../server/connectors/steam.ts';
 import { UnsupportedConnectorError } from '../server/connectors/types.ts';
 import { retryDelayMs, safeJobError } from '../server/job-queue.ts';
+import { jsonToXlsx } from '../server/exports.ts';
+import ExcelJS from 'exceljs';
+import { buildEvidenceOnlyCompetitorAnalysis } from '../server/ai.ts';
+import { generateResearchReport } from '../server/reports.ts';
 
 test('unsupported marketplace connectors report an explicit unsupported error', async () => {
   const connector = new GooglePlayConnector();
@@ -18,6 +24,113 @@ test('unsupported marketplace connectors report an explicit unsupported error', 
     return true;
   });
   assert.equal((await connector.getStatus()).status, 'unsupported');
+});
+
+test('Apple catalog search preserves verified catalog fields without claiming review text', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    requestedUrl = String(input);
+    return new Response(JSON.stringify({ results: [{
+      trackId: 12345,
+      trackName: 'Sample Planner',
+      sellerName: 'Example Publisher',
+      primaryGenreName: 'Productivity',
+      averageUserRating: 4.7,
+      userRatingCount: 920,
+      trackViewUrl: 'https://apps.apple.com/app/id12345',
+      currentVersionReleaseDate: '2026-01-01T00:00:00Z',
+      version: '2.0',
+    }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    const apps = await new AppleAppStoreConnector().searchApps({ query: 'planner', category: 'Productivity', limit: 10 });
+    assert.match(requestedUrl, /term=planner/);
+    assert.equal(apps.length, 1);
+    assert.equal(apps[0].category, 'Productivity');
+    assert.equal(apps[0].ratingCount, 920);
+    assert.equal(apps[0].reviewCount, 0);
+    assert.equal(apps[0].collectionAvailable, false);
+    assert.equal(apps[0].metadataStatus, 'catalog_only');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Steam review pagination passes the cursor and returns the source continuation cursor', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    requestedUrl = String(input);
+    return new Response(JSON.stringify({
+      success: 1,
+      cursor: 'cursor-next',
+      query_summary: { total_reviews: 24 },
+      reviews: [{
+        recommendationid: 'review-1',
+        review: 'The latest update broke saved games and crashes often.',
+        timestamp_created: 1760000000,
+        voted_up: false,
+        votes_up: 3,
+        language: 'english',
+      }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    const result = await new SteamConnector().fetchReviews('steam_730', { cursor: 'cursor-current', limit: 100 });
+    assert.match(requestedUrl, /cursor=cursor-current/);
+    assert.equal(result.nextCursor, 'cursor-next');
+    assert.equal(result.hasMore, true);
+    assert.equal(result.totalAvailable, 24);
+    assert.equal(result.reviews.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('competitor comparison excludes seed reviews and cites only stored source review IDs', () => {
+  const apps = [
+    { id: 'steam_a', name: 'Game A', marketplace: 'steam', category: 'Gaming', rating: 0, ratingCount: 0 } as Application,
+    { id: 'steam_b', name: 'Game B', marketplace: 'steam', category: 'Gaming', rating: 4.1, ratingCount: 200 } as Application,
+  ];
+  const reviews = [
+    { id: 'live-a1', appId: 'steam_a', appName: 'Game A', marketplace: 'steam', text: 'The update crashes every time I open the game.', starRating: 1, provenance: 'live_marketplace' },
+    { id: 'live-a2', appId: 'steam_a', appName: 'Game A', marketplace: 'steam', text: 'Crashes after the latest update; saved games are lost.', starRating: 2, provenance: 'live_marketplace' },
+    { id: 'seed-b1', appId: 'steam_b', appName: 'Game B', marketplace: 'steam', text: 'Seeded sample review should not be analyzed.', starRating: 1, provenance: 'seed' },
+  ] as Review[];
+  const result = buildEvidenceOnlyCompetitorAnalysis(apps, reviews);
+  assert.equal(result.evidenceReviewCount, 2);
+  assert.equal(result.metrics.find((metric) => metric.appId === 'steam_b')?.sampleReviewCount, 0);
+  assert.equal(result.provenance, 'calculated');
+  assert.ok(result.findings.every((finding) => finding.evidenceReviewIds.every((id) => id.startsWith('live-'))));
+});
+
+test('CSV and XLSX exports neutralize formula-like strings without changing numeric cells', async () => {
+  const csv = jsonToCsv([{ value: '=SUM(1,1)', amount: -7 }], [
+    { key: 'value', header: 'Value' },
+    { key: 'amount', header: 'Amount' },
+  ]);
+  assert.ok(csv.includes("'=SUM(1,1)"));
+  assert.ok(csv.includes('-7'));
+
+  const buffer = await jsonToXlsx([{ value: '=HYPERLINK("https://example.com","click")', amount: -7 }], [
+    { key: 'value', header: 'Value' },
+    { key: 'amount', header: 'Amount' },
+  ], 'Review Data');
+  const workbook = new ExcelJS.Workbook();
+  const arrayBuffer = new ArrayBuffer(buffer.byteLength);
+  new Uint8Array(arrayBuffer).set(buffer);
+  await workbook.xlsx.load(arrayBuffer);
+  const worksheet = workbook.getWorksheet('Review Data');
+  assert.ok(worksheet);
+  assert.equal(worksheet.getCell('A2').value, "'=HYPERLINK(\"https://example.com\",\"click\")");
+  assert.equal(worksheet.getCell('B2').value, -7);
+});
+
+test('research report generator returns a PDF with explicit source limitations', async () => {
+  const pdf = await generateResearchReport({ title: 'AppPulse test report', apps: [], reviews: [], themes: [], opportunities: [] });
+  assert.equal(pdf.subarray(0, 5).toString('utf8'), '%PDF-');
+  assert.ok(pdf.length > 500);
 });
 
 test('calculateOpportunityScore correctly calculates priority and breakdown', () => {
