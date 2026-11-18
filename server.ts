@@ -1,5 +1,5 @@
 import express from 'express';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHmac } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -50,22 +50,29 @@ interface AuthenticatedRequest extends express.Request {
   workspaceId: string;
 }
 
-const authRateBuckets = new Map<string, { count: number; resetAt: number }>();
-app.use('/api/auth', (req, res, next) => {
-  const key = req.ip || req.socket.remoteAddress || 'unknown';
-  const now = Date.now();
-  const current = authRateBuckets.get(key);
-  if (authRateBuckets.size > 10000) {
-    for (const [bucketKey, bucket] of authRateBuckets) if (bucket.resetAt <= now) authRateBuckets.delete(bucketKey);
+const AUTH_RATE_WINDOW_MS = 15 * 60 * 1000;
+const AUTH_RATE_LIMIT = 10;
+const authRateLimitSecret = process.env.AUTH_RATE_LIMIT_SECRET || process.env.DATABASE_URL || 'apppulse-auth-rate-limit-v1';
+
+app.use('/api/auth', async (req, res, next) => {
+  try {
+    const clientAddress = req.ip || req.socket.remoteAddress || 'unknown';
+    // Store only a keyed digest, never the raw client IP address.
+    const keyHash = createHmac('sha256', authRateLimitSecret).update(clientAddress).digest('hex');
+    const now = Date.now();
+    const bucket = await db.incrementAuthRateLimit(keyHash, now, now + AUTH_RATE_WINDOW_MS);
+    res.setHeader('RateLimit-Limit', String(AUTH_RATE_LIMIT));
+    res.setHeader('RateLimit-Remaining', String(Math.max(0, AUTH_RATE_LIMIT - bucket.count)));
+    res.setHeader('RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
+    if (bucket.count > AUTH_RATE_LIMIT) {
+      return res.status(429).json({ error: 'Too many authentication attempts. Try again later.' });
+    }
+    next();
+  } catch (error) {
+    console.error('[Auth] Shared rate limiter unavailable:', error);
+    // Fail closed: do not expose authentication endpoints without the abuse control.
+    return res.status(503).json({ error: 'Authentication is temporarily unavailable. Please try again shortly.' });
   }
-  if (authRateBuckets.size > 12000 && !current) return res.status(429).json({ error: 'Too many authentication attempts. Try again later.' });
-  if (!current || current.resetAt <= now) {
-    authRateBuckets.set(key, { count: 1, resetAt: now + 15 * 60 * 1000 });
-    return next();
-  }
-  current.count += 1;
-  if (current.count > 10) return res.status(429).json({ error: 'Too many authentication attempts. Try again later.' });
-  next();
 });
 
 function readSessionToken(req: express.Request): string | null {
