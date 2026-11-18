@@ -305,7 +305,8 @@ export class AppPulseRepository {
 
     if (rows.length === 0) return null;
     const r = rows[0];
-    if (new Date(r.expires_at).getTime() <= Date.now()) {
+    const expiresAt = Date.parse(r.expires_at);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
       await db.execute('DELETE FROM sessions WHERE token = $1', [tokenHash]);
       return null;
     }
