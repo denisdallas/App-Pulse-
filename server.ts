@@ -197,7 +197,8 @@ app.get('/api/workspaces', async (req: any, res) => {
     const workspaces = await repository.getWorkspacesForUser(req.user.id);
     res.json({ workspaces, activeWorkspaceId: req.workspaceId });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -209,7 +210,8 @@ app.get('/api/stats', async (req: any, res) => {
     const stats = await repository.getStats(req.workspaceId);
     res.json(stats);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -266,7 +268,8 @@ app.get('/api/apps', async (req: any, res) => {
 
     res.json(apps);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -277,7 +280,8 @@ app.get('/api/apps/:id', async (req: any, res) => {
     const reviews = await repository.getReviews(req.workspaceId, { appId: req.params.id });
     res.json({ app: appItem, reviews: reviews.slice(0, 100), totalReviews: reviews.length });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -301,7 +305,8 @@ app.post('/api/apps/search-online', async (req: any, res) => {
 
     res.json({ apps: liveApps, count: liveApps.length });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -311,7 +316,8 @@ app.get('/api/jobs', async (req: any, res) => {
     const jobs = await repository.getJobs(req.workspaceId);
     res.json(jobs);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -399,7 +405,8 @@ app.post('/api/apps/collect', async (req: any, res) => {
 
     res.json({ job, message: 'Durable collection job initiated' });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -408,7 +415,8 @@ app.post('/api/jobs/:id/cancel', async (req: any, res) => {
     const success = await repository.cancelJob(req.workspaceId, req.params.id);
     res.json({ success, message: success ? 'Job cancelled' : 'Job could not be cancelled' });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -457,7 +465,8 @@ app.get('/api/reviews', async (req: any, res) => {
 
     res.json({ reviews: paged, total });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -467,7 +476,8 @@ app.get('/api/themes', async (req: any, res) => {
     const themes = await repository.getComplaintThemes(req.workspaceId);
     res.json(themes);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -500,7 +510,8 @@ app.post('/api/analyze', async (req: any, res) => {
 
     res.json({ themes, count: themes.length });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -542,7 +553,8 @@ app.get('/api/compare', async (req: any, res) => {
 
     res.json({ comparison: comparisonData });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -552,7 +564,8 @@ app.get('/api/opportunities', async (req: any, res) => {
     const opps = await repository.getOpportunities(req.workspaceId);
     res.json(opps);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -569,7 +582,8 @@ app.post('/api/opportunities/generate', async (req: any, res) => {
 
     res.json({ opportunities: opps, count: opps.length });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -580,7 +594,8 @@ app.post('/api/opportunities', async (req: any, res) => {
     const saved = await repository.saveOpportunity(req.workspaceId, opp);
     res.json(saved);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -590,7 +605,8 @@ app.get('/api/contacts', async (req: any, res) => {
     const contacts = await repository.getContacts(req.workspaceId);
     res.json(contacts);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -601,7 +617,8 @@ app.post('/api/contacts', async (req: any, res) => {
     const saved = await repository.saveContact(req.workspaceId, contact);
     res.json(saved);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -643,7 +660,8 @@ app.post('/api/contacts/import-csv', async (req: any, res) => {
 
     res.json({ imported: addedContacts.length, contacts: addedContacts });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -653,7 +671,8 @@ app.get('/api/suppression', async (req: any, res) => {
     const list = await repository.getSuppressionList(req.workspaceId);
     res.json(list);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -664,7 +683,8 @@ app.post('/api/suppression', async (req: any, res) => {
     const record = await repository.addSuppression(req.workspaceId, emailOrDomain, reason);
     res.json(record);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -674,7 +694,8 @@ app.get('/api/campaigns', async (req: any, res) => {
     const campaigns = await repository.getCampaigns(req.workspaceId);
     res.json(campaigns);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -684,7 +705,8 @@ app.post('/api/campaigns', async (req: any, res) => {
     const saved = await repository.saveCampaign(req.workspaceId, camp);
     res.json(saved);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -761,7 +783,8 @@ app.post('/api/campaigns/:id/send', async (req: any, res) => {
       provider: emailConfig.provider,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -771,7 +794,8 @@ app.get('/api/projects', async (req: any, res) => {
     const projects = await repository.getProjects(req.workspaceId);
     res.json(projects);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -781,7 +805,8 @@ app.get('/api/reports', async (req: any, res) => {
     const reports = await repository.getReports(req.workspaceId);
     res.json(reports);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -852,7 +877,8 @@ app.post('/api/reports/generate', async (req: any, res) => {
     await repository.saveReport(req.workspaceId, record);
     res.json({ report: record });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -873,7 +899,8 @@ app.get('/api/reports/:id/download', async (req: any, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${report.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.${ext}"`);
     res.sendFile(report.filePath);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -901,7 +928,8 @@ app.get('/api/settings', async (req: any, res) => {
       suppressionCount: suppressionList.length,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -976,7 +1004,8 @@ app.get('/api/export', async (req: any, res) => {
 
     res.status(400).json({ error: 'Invalid export type. Use reviews, opportunities, or contacts.' });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
