@@ -1,5 +1,5 @@
 import express from 'express';
-import crypto from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -129,7 +129,7 @@ app.post('/api/auth/register', async (req: any, res) => {
       return res.status(409).json({ error: 'An account with this email already exists.' });
     }
 
-    const userId = `usr_${crypto.randomBytes(16).toString('hex')}`;
+    const userId = `usr_${randomBytes(16).toString('hex')}`;
     const user = await repository.createUser({ id: userId, email, passwordHash: hashPassword(password), name });
     const workspace = await repository.createWorkspaceForUser(userId, `${name}'s Workspace`);
     const token = await repository.createSession(userId, workspace.id);
