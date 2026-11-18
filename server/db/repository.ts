@@ -19,7 +19,8 @@ import {
 } from '../../src/types.ts';
 import { generateReviewFingerprint } from '../../src/lib/dedup.ts';
 import { SEED_APPS, getSeedReviews, SEED_THEMES, getSeedOpportunities, SEED_CONTACTS, SEED_CAMPAIGNS, SEED_SUPPRESSION, SEED_PROJECTS } from '../seedData.ts';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
+import { createSessionToken, hashSessionToken } from '../auth/security.ts';
 
 export class AppPulseRepository {
   private defaultWorkspaceId = 'ws_default';
@@ -188,6 +189,35 @@ export class AppPulseRepository {
   }
 
   // ---------------- WORKSPACES & USERS ----------------
+
+  async getWorkspacesForUser(userId: string): Promise<Workspace[]> {
+    const rows = await db.query(
+      'SELECT w.* FROM workspaces w INNER JOIN workspace_members wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 ORDER BY w.created_at ASC',
+      [userId]
+    );
+    return rows.map((r: any) => ({ id: r.id, name: r.name, slug: r.slug, createdAt: r.created_at }));
+  }
+
+  async getFirstWorkspaceForUser(userId: string): Promise<Workspace | null> {
+    const rows = await db.query(
+      'SELECT w.* FROM workspaces w INNER JOIN workspace_members wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 ORDER BY w.created_at ASC LIMIT 1',
+      [userId]
+    );
+    if (!rows.length) return null;
+    const r = rows[0];
+    return { id: r.id, name: r.name, slug: r.slug, createdAt: r.created_at };
+  }
+
+  async createWorkspaceForUser(userId: string, name: string): Promise<Workspace> {
+    const now = new Date().toISOString();
+    const id = `ws_${crypto.randomBytes(12).toString('hex')}`;
+    const slug = `workspace-${crypto.randomBytes(8).toString('hex')}`;
+    await db.transaction(async () => {
+      await db.execute('INSERT INTO workspaces (id, name, slug, created_at) VALUES ($1, $2, $3, $4)', [id, name, slug, now]);
+      await db.execute('INSERT INTO workspace_members (workspace_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)', [id, userId, 'admin', now]);
+    });
+    return { id, name, slug, createdAt: now };
+  }
 
   async getWorkspaces(): Promise<Workspace[]> {
     const rows = await db.query('SELECT * FROM workspaces ORDER BY created_at ASC');
