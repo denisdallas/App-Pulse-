@@ -39,6 +39,9 @@ jobs:
 
       - name: API authentication smoke test
         shell: bash
+        env:
+          # Isolated test-only secret; never used by a deployed environment.
+          AUTH_RATE_LIMIT_SECRET: ci-only-${{ github.run_id }}-${{ github.sha }}-auth-rate-limit
         run: |
           set -euo pipefail
           PORT=4179 NODE_ENV=test bun run dev > /tmp/apppulse-auth-smoke.log 2>&1 &
