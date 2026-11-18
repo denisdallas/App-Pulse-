@@ -10,6 +10,7 @@ export interface IDatabase {
   transaction<T>(fn: () => Promise<T>): Promise<T>;
   getEngineName(): 'PostgreSQL' | 'SQLite (Durable Relational)';
   isPostgres(): boolean;
+  incrementAuthRateLimit(keyHash: string, now: number, resetAt: number): Promise<{ count: number; resetAt: number }>;
   close(): Promise<void>;
 }
 
@@ -139,6 +140,23 @@ class RelationalDatabase implements IDatabase {
     }
 
     throw new Error('Database not initialized');
+  }
+
+  async incrementAuthRateLimit(keyHash: string, now: number, resetAt: number): Promise<{ count: number; resetAt: number }> {
+    return this.transaction(async () => {
+      // Expired keys are removed under the same transaction as the increment.
+      await this.execute('DELETE FROM auth_rate_limits WHERE reset_at <= $1', [now]);
+      const rows = await this.query<{ count: number; reset_at: number }>(
+        `INSERT INTO auth_rate_limits (key_hash, count, reset_at)
+         VALUES ($1, 1, $3)
+         ON CONFLICT (key_hash) DO UPDATE SET
+           count = CASE WHEN auth_rate_limits.reset_at <= $2 THEN 1 ELSE auth_rate_limits.count + 1 END,
+           reset_at = CASE WHEN auth_rate_limits.reset_at <= $2 THEN $3 ELSE auth_rate_limits.reset_at END
+         RETURNING count, reset_at`,
+        [keyHash, now, resetAt]
+      );
+      return { count: Number(rows[0].count), resetAt: Number(rows[0].reset_at) };
+    });
   }
 
   async close(): Promise<void> {
