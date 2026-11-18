@@ -52,10 +52,14 @@ interface AuthenticatedRequest extends express.Request {
 
 const AUTH_RATE_WINDOW_MS = 15 * 60 * 1000;
 const AUTH_RATE_LIMIT = 10;
-const authRateLimitSecret = process.env.AUTH_RATE_LIMIT_SECRET || process.env.DATABASE_URL || 'apppulse-auth-rate-limit-v1';
+const authRateLimitSecret = process.env.AUTH_RATE_LIMIT_SECRET || process.env.DATABASE_URL || '';
 
 app.use('/api/auth', async (req, res, next) => {
   try {
+    if (!authRateLimitSecret) {
+      console.error('[Auth] AUTH_RATE_LIMIT_SECRET or DATABASE_URL must be configured for authentication throttling.');
+      return res.status(503).json({ error: 'Authentication is temporarily unavailable. Please try again shortly.' });
+    }
     const clientAddress = req.ip || req.socket.remoteAddress || 'unknown';
     // Store only a keyed digest, never the raw client IP address.
     const keyHash = createHmac('sha256', authRateLimitSecret).update(clientAddress).digest('hex');
