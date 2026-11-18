@@ -45,6 +45,9 @@ jobs:
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true' EXIT
           base="http://127.0.0.1:4179"
+          demo_code="$(curl -sS -o /tmp/apppulse-demo.json -w '%{http_code}' "$base/api/demo")"
+          test "$demo_code" = "200"
+          node -e 'const d=require("/tmp/apppulse-demo.json"); if(d.mode!=="demo" || !d.apps.length || !d.reviews.length || !d.apps.every(x=>x.isDemo===true) || !d.reviews.every(x=>x.isDemo===true) || !/Illustrative sample records/.test(d.notice)) process.exit(1)'
           code=""
           for attempt in $(seq 1 30); do
             code="$(curl -sS -o /dev/null -w '%{http_code}' "$base/api/auth/me" || true)"
