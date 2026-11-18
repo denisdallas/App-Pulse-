@@ -1,4 +1,6 @@
 import test from 'node:test';
+import { pbkdf2Sync } from 'node:crypto';
+import { createSessionToken, hashPassword, hashSessionToken, isAdminRole, isValidRegistrationInput, isWorkspaceRequestAllowed, verifyPassword } from '../server/auth/security.ts';
 import assert from 'node:assert/strict';
 import { calculateOpportunityScore } from '../src/lib/scoring.ts';
 import { generateReviewFingerprint, deduplicateReviews } from '../src/lib/dedup.ts';
@@ -270,3 +272,67 @@ test('Outreach email dispatch correctly blocks simulated delivery when unconfigu
 });
 
 
+
+
+test('password hashing uses independent salts and verifies scrypt credentials', () => {
+  const first = hashPassword('Correct Horse Battery 2026!');
+  const second = hashPassword('Correct Horse Battery 2026!');
+  assert.notEqual(first, second, 'identical passwords must receive different salts');
+  assert.match(first, /^scrypt\\$/);
+  assert.equal(verifyPassword('Correct Horse Battery 2026!', first).valid, true);
+  assert.equal(verifyPassword('wrong password', first).valid, false);
+});
+
+test('legacy password hashes verify only for migration and request rehash', () => {
+  const legacy = pbkdf2Sync('legacy-password', 'apppulse_salt_2026', 10000, 32, 'sha256').toString('hex');
+  assert.deepEqual(verifyPassword('legacy-password', legacy), { valid: true, needsRehash: true });
+  assert.equal(verifyPassword('incorrect', legacy).valid, false);
+});
+
+test('registration policy rejects malformed email, short passwords, and invalid names', () => {
+  assert.equal(isValidRegistrationInput('person@example.com', 'long-enough-password', 'Person'), true);
+  assert.equal(isValidRegistrationInput('not-an-email', 'long-enough-password', 'Person'), false);
+  assert.equal(isValidRegistrationInput('person@example.com', 'short', 'Person'), false);
+  assert.equal(isValidRegistrationInput('person@example.com', 'long-enough-password', ' '), false);
+});
+
+test('workspace and role policy rejects spoofed workspace IDs and member escalation', () => {
+  assert.equal(isWorkspaceRequestAllowed('ws_a'), true);
+  assert.equal(isWorkspaceRequestAllowed('ws_a', 'ws_a'), true);
+  assert.equal(isWorkspaceRequestAllowed('ws_a', 'ws_b'), false);
+  assert.equal(isAdminRole('member'), false);
+  assert.equal(isAdminRole('admin'), true);
+});
+
+test('session tokens are random and only their SHA-256 digest is suitable for storage', () => {
+  const first = createSessionToken();
+  const second = createSessionToken();
+  assert.notEqual(first, second);
+  assert.equal(first.length >= 40, true);
+  assert.notEqual(hashSessionToken(first), first);
+  assert.equal(hashSessionToken(first), hashSessionToken(first));
+});
+
+test('repository sessions require membership, store only token digests, and reject expiry', async () => {
+  const { repository } = await import('../server/db/repository.ts');
+  const { db } = await import('../server/db/database.ts');
+  const userId = `security_test_${Date.now()}_a`;
+  const otherUserId = `security_test_${Date.now()}_b`;
+  const passwordHash = hashPassword('test-password-long-enough');
+  await repository.createUser({ id: userId, email: `${userId}@example.test`, passwordHash, name: 'Security Test' });
+  await repository.createUser({ id: otherUserId, email: `${otherUserId}@example.test`, passwordHash, name: 'Other Test' });
+  const workspace = await repository.createWorkspaceForUser(userId, 'Security Test Workspace');
+  const otherWorkspace = await repository.createWorkspaceForUser(otherUserId, 'Other Workspace');
+
+  const token = await repository.createSession(userId, workspace.id);
+  const digest = hashSessionToken(token);
+  const stored = await db.query('SELECT token FROM sessions WHERE token = $1', [digest]);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].token, digest);
+  assert.equal((await repository.validateSession(token))?.workspaceId, workspace.id);
+  assert.equal(await repository.validateSession('invalid-session-token'), null);
+  await assert.rejects(() => repository.createSession(userId, otherWorkspace.id), /not a member/i);
+
+  await db.execute('UPDATE sessions SET expires_at = $1 WHERE token = $2', ['2000-01-01T00:00:00.000Z', digest]);
+  assert.equal(await repository.validateSession(token), null);
+});
