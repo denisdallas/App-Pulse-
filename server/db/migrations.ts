@@ -32,6 +32,9 @@ export async function runMigrations(): Promise<void> {
       PRIMARY KEY (workspace_id, user_id)
     );`,
 
+    `CREATE TABLE IF NOT EXISTS auth_rate_limits (key_hash TEXT PRIMARY KEY, count INTEGER NOT NULL, reset_at BIGINT NOT NULL);`,
+    `CREATE INDEX IF NOT EXISTS idx_auth_rate_limits_reset ON auth_rate_limits (reset_at);`,
+
     `CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
