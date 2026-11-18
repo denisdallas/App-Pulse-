@@ -52,6 +52,8 @@ jobs:
             sleep 1
           done
           test "$code" = "401"
+          code="$(curl -sS -H 'Cookie: app_session=%E0%A4%A' -o /dev/null -w '%{http_code}' "$base/api/auth/me")"
+          test "$code" = "401"
           code="$(curl -sS -o /dev/null -w '%{http_code}' "$base/api/stats")"
           test "$code" = "401"
 
