@@ -259,26 +259,18 @@ export class AppPulseRepository {
     };
   }
 
-  async createUser(user: { id: string; email: string; passwordHash: string; name: string; role?: string }): Promise<User> {
+  async createUser(user: { id: string; email: string; passwordHash: string; name: string }): Promise<User> {
     const now = new Date().toISOString();
+    const email = user.email.toLowerCase().trim();
     await db.execute(
       'INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
-      [user.id, user.email.toLowerCase().trim(), user.passwordHash, user.name, user.role || 'member', now]
+      [user.id, email, user.passwordHash, user.name, 'member', now]
     );
+    return { id: user.id, email, name: user.name, role: 'member', createdAt: now };
+  }
 
-    // Add user to default workspace
-    await db.execute(
-      'INSERT INTO workspace_members (workspace_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)',
-      [this.defaultWorkspaceId, user.id, user.role || 'member', now]
-    );
-
-    return {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: (user.role as any) || 'member',
-      createdAt: now,
-    };
+  async updateUserPasswordHash(userId: string, passwordHash: string): Promise<void> {
+    await db.execute('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, userId]);
   }
 
   async createSession(userId: string, workspaceId: string): Promise<string> {
