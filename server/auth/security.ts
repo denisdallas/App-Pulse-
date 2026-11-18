@@ -58,7 +58,7 @@ export function createSessionToken(): string {
 
 export function isValidRegistrationInput(email: unknown, password: unknown, name: unknown): boolean {
   return typeof email === 'string'
-    && /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email.trim())
+    && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
     && typeof password === 'string'
     && password.length >= 12
     && password.length <= 256
