@@ -268,12 +268,17 @@ export async function runMigrations(): Promise<void> {
     `CREATE INDEX IF NOT EXISTS idx_opps_ws ON opportunities (workspace_id);`,
   ];
 
-  for (const sql of ddlStatements) {
-    await db.execute(sql);
-  }
+  // Apply schema changes and bootstrap adjustments atomically. If any DDL or
+  // seed operation fails, roll back the entire migration rather than leaving a
+  // partially initialized database behind.
+  await db.transaction(async () => {
+    for (const sql of ddlStatements) {
+      await db.execute(sql);
+    }
 
-  // Ensure default admin user and workspace exist
-  await seedDefaultAuthAndWorkspace();
+    await seedDefaultAuthAndWorkspace();
+  });
+
   console.log('[Migrations] Relational schema and initial constraints applied successfully.');
 }
 
