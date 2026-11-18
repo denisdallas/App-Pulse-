@@ -15,6 +15,7 @@ import { Application, Contact, Opportunity, CollectionJob, Campaign, ReportRecor
 import { generateResearchPdf, generateResearchXlsx, escapeSpreadsheetValue } from './server/reports/generator.ts';
 import { getEmailProviderConfig, sendOutreachEmail } from './server/outreach/delivery.ts';
 import { filterSuppressedRecipients } from './src/lib/suppression.ts';
+import { SEED_APPS, getSeedReviews, SEED_THEMES, getSeedOpportunities, SEED_FORECASTS } from './server/seedData.ts';
 
 dotenv.config();
 
@@ -40,6 +41,33 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Public read-only product demo. This route uses isolated illustrative fixtures only:
+// it never reads from or writes to a visitor's or customer's workspace.
+app.get('/api/demo', (_req, res) => {
+  const apps = SEED_APPS.map((item) => ({ ...item, tags: [...item.tags], isDemo: true, provenance: 'seed' as const }));
+  const reviews = getSeedReviews().map((item) => ({ ...item, isDemo: true, provenance: 'seed' as const }));
+  const themes = SEED_THEMES.map((item) => ({ ...item, isDemo: true }));
+  const opportunities = getSeedOpportunities().map((item) => ({ ...item, isDemo: true }));
+  const forecasts = SEED_FORECASTS.map((item) => ({ ...item }));
+  res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+  res.json({
+    mode: 'demo',
+    notice: 'Illustrative sample records only. These are not live marketplace results or verified current metrics.',
+    stats: {
+      totalApps: apps.length,
+      totalReviews: reviews.length,
+      negativeReviews: reviews.filter((item) => item.starRating <= 2).length,
+      totalThemes: themes.length,
+      totalOpportunities: opportunities.length,
+    },
+    apps,
+    reviews: reviews.slice(0, 30),
+    themes,
+    opportunities,
+    forecasts,
+  });
+});
 
 // Ensure reports directory exists
 const reportsDir = path.join(__dirname, 'server', 'data', 'reports');
