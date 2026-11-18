@@ -1,10 +1,8 @@
 import { db } from './database.ts';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
+import { hashPassword } from '../auth/security.ts';
 
-export function hashPassword(password: string): string {
-  const salt = 'apppulse_salt_2026';
-  return crypto.pbkdf2Sync(password, salt, 10000, 32, 'sha256').toString('hex');
-}
+export { hashPassword } from '../auth/security.ts';
 
 export async function runMigrations(): Promise<void> {
   console.log(`[Migrations] Running relational database migrations on ${db.getEngineName()}...`);
@@ -15,7 +13,7 @@ export async function runMigrations(): Promise<void> {
       email TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       name TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'admin',
+      role TEXT NOT NULL DEFAULT 'member',
       created_at TEXT NOT NULL
     );`,
 
@@ -282,29 +280,47 @@ export async function runMigrations(): Promise<void> {
 async function seedDefaultAuthAndWorkspace() {
   const timestamp = new Date().toISOString();
   const defaultWsId = 'ws_default';
-  const defaultUserId = 'usr_admin_01';
 
-  // Check if default workspace exists
   const existingWs = await db.query('SELECT id FROM workspaces WHERE id = $1', [defaultWsId]);
   if (existingWs.length === 0) {
     await db.execute(
       'INSERT INTO workspaces (id, name, slug, created_at) VALUES ($1, $2, $3, $4)',
-      [defaultWsId, 'Main Production Workspace', 'main-prod', timestamp]
+      [defaultWsId, 'Main Workspace', 'main-workspace', timestamp]
     );
   }
 
-  // Check if default admin user exists
-  const existingUser = await db.query('SELECT id FROM users WHERE id = $1', [defaultUserId]);
-  if (existingUser.length === 0) {
-    const passwordHash = hashPassword('AppPulse2026!');
-    await db.execute(
-      'INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
-      [defaultUserId, 'admin@apppulse.io', passwordHash, 'Denis Dallas (Lead)', 'admin', timestamp]
-    );
+  // Remove only the exact legacy seeded account whose password still matches
+  // the published development credential. Never delete a user-customized account.
+  const legacyHash = '0'; 
+  const legacyUsers = await db.query('SELECT id, password_hash FROM users WHERE email = $1', ['admin@apppulse.io']);
+  if (legacyUsers.length > 0) {
+    const { verifyPassword } = await import('../auth/security.ts');
+    for (const user of legacyUsers) {
+      if (verifyPassword('AppPulse2026!', user.password_hash).valid) {
+        await db.execute('DELETE FROM sessions WHERE user_id = $1', [user.id]);
+        await db.execute('DELETE FROM workspace_members WHERE user_id = $1', [user.id]);
+        await db.execute('DELETE FROM users WHERE id = $1', [user.id]);
+      }
+    }
+  }
 
-    await db.execute(
-      'INSERT INTO workspace_members (workspace_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)',
-      [defaultWsId, defaultUserId, 'admin', timestamp]
-    );
+  // Optional one-time bootstrap: credentials must be explicitly supplied through
+  // deployment secrets. No default administrator or password is created.
+  const bootstrapEmail = process.env.APP_BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
+  const bootstrapPassword = process.env.APP_BOOTSTRAP_ADMIN_PASSWORD;
+  const bootstrapName = process.env.APP_BOOTSTRAP_ADMIN_NAME?.trim() || 'Workspace Administrator';
+  if (bootstrapEmail && bootstrapPassword && bootstrapPassword.length >= 12) {
+    const existingUsers = await db.query('SELECT id FROM users LIMIT 1');
+    if (existingUsers.length === 0) {
+      const userId = `usr_${crypto.randomBytes(16).toString('hex')}`;
+      await db.execute(
+        'INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
+        [userId, bootstrapEmail, hashPassword(bootstrapPassword), bootstrapName, 'admin', timestamp]
+      );
+      await db.execute(
+        'INSERT INTO workspace_members (workspace_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)',
+        [defaultWsId, userId, 'admin', timestamp]
+      );
+    }
   }
 }
