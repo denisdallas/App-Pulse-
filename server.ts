@@ -73,7 +73,12 @@ function readSessionToken(req: express.Request): string | null {
   if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) return authHeader.slice(7);
   const cookieHeader = req.headers.cookie || '';
   const cookie = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith('app_session='));
-  return cookie ? decodeURIComponent(cookie.slice('app_session='.length)) : null;
+  if (!cookie) return null;
+  try {
+    return decodeURIComponent(cookie.slice('app_session='.length));
+  } catch {
+    return null;
+  }
 }
 
 function setSessionCookie(res: express.Response, token: string) {
