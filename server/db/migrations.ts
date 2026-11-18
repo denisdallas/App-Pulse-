@@ -289,14 +289,25 @@ async function seedDefaultAuthAndWorkspace() {
     );
   }
 
+  // Disable the exact legacy seeded administrator credential without deleting the account or its data.
+  const legacySeededAdmin = await db.query(
+    'SELECT id FROM users WHERE id = $1 AND email = $2 AND password_hash = $3',
+    ['usr_admin_01', 'admin@apppulse.io', '591655aed082b3c8a45834fc104d3ba7da7a4dc60f267a82a2f6dbed3b64c6a8']
+  );
+  if (legacySeededAdmin.length > 0) {
+    const id = legacySeededAdmin[0].id;
+    await db.execute('UPDATE users SET password_hash = $1, role = $2 WHERE id = $3', [hashPassword(crypto.randomBytes(48).toString('hex')), 'member', id]);
+    await db.execute('UPDATE workspace_members SET role = $1 WHERE user_id = $2 AND workspace_id = $3', ['member', id, defaultWsId]);
+  }
+
   // Optional one-time bootstrap: credentials must be explicitly supplied through
   // deployment secrets. No default administrator or password is created.
   const bootstrapEmail = process.env.APP_BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
   const bootstrapPassword = process.env.APP_BOOTSTRAP_ADMIN_PASSWORD;
   const bootstrapName = process.env.APP_BOOTSTRAP_ADMIN_NAME?.trim() || 'Workspace Administrator';
   if (bootstrapEmail && bootstrapPassword && bootstrapPassword.length >= 12) {
-    const existingUsers = await db.query('SELECT id FROM users LIMIT 1');
-    if (existingUsers.length === 0) {
+    const existingAdmins = await db.query("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
+    if (existingAdmins.length === 0) {
       const userId = `usr_${crypto.randomBytes(16).toString('hex')}`;
       await db.execute(
         'INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
