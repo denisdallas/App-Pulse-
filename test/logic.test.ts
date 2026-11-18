@@ -317,9 +317,16 @@ test('repository sessions require membership, store only token digests, and reje
   const userId = 'security_test_' + suffix + '_a';
   const otherUserId = 'security_test_' + suffix + '_b';
   const passwordHash = hashPassword('test-password-long-enough');
-  await repository.createUser({ id: userId, email: userId + '@example.test', passwordHash, name: 'Security Test' });
-  await repository.createUser({ id: otherUserId, email: otherUserId + '@example.test', passwordHash, name: 'Other Test' });
-  const workspace = await repository.createWorkspaceForUser(userId, 'Security Test Workspace');
+  const registered = await repository.registerUserWithWorkspace(
+    { id: userId, email: userId + '@example.test', passwordHash, name: 'Security Test' },
+    'Security Test Workspace'
+  );
+  assert.equal(registered.user.role, 'admin', 'new workspace owner receives workspace-admin membership');
+  const userRow = await db.query('SELECT role FROM users WHERE id = $1', [userId]);
+  assert.equal(userRow[0].role, 'member', 'registration cannot elevate the global account role');
+  const otherUser = await repository.createUser({ id: otherUserId, email: otherUserId + '@example.test', passwordHash, name: 'Other Test', role: 'admin' } as any);
+  assert.equal(otherUser.role, 'member', 'untrusted role input is ignored');
+  const workspace = registered.workspace;
   const otherWorkspace = await repository.createWorkspaceForUser(otherUserId, 'Other Workspace');
   const token = await repository.createSession(userId, workspace.id);
   const digest = hashSessionToken(token);
