@@ -437,7 +437,8 @@ export class AppPulseRepository {
         last_updated = excluded.last_updated,
         current_version = excluded.current_version,
         store_url = excluded.store_url,
-        tags_json = excluded.tags_json`,
+        tags_json = excluded.tags_json
+      WHERE applications.workspace_id = excluded.workspace_id`,
       [
         app.id, workspaceId, app.name, app.iconUrl || '', app.publisher, app.marketplace, app.description || '',
         app.category, app.rating, app.ratingCount, app.reviewCount, app.platform, app.releaseDate,
@@ -575,7 +576,8 @@ export class AppPulseRepository {
         representative_quotes_json = excluded.representative_quotes_json,
         evidence_review_ids_json = excluded.evidence_review_ids_json,
         severity = excluded.severity,
-        confidence_score = excluded.confidence_score`,
+        confidence_score = excluded.confidence_score
+      WHERE complaint_themes.workspace_id = excluded.workspace_id`,
       [
         theme.id, workspaceId, theme.title, theme.category, theme.summary, theme.reviewCount,
         JSON.stringify(theme.affectedApps || []), JSON.stringify(theme.affectedAppNames || []),
@@ -644,7 +646,8 @@ export class AppPulseRepository {
         proposed_concept = excluded.proposed_concept,
         priority_score = excluded.priority_score,
         score_breakdown_json = excluded.score_breakdown_json,
-        status = excluded.status`,
+        status = excluded.status
+      WHERE opportunities.workspace_id = excluded.workspace_id`,
       [
         opp.id, workspaceId, opp.title, opp.problemStatement, opp.targetUser,
         JSON.stringify(opp.supportingAppIds || []), JSON.stringify(opp.supportingAppNames || []),
@@ -796,7 +799,8 @@ export class AppPulseRepository {
         company = excluded.company,
         email = excluded.email,
         status = excluded.status,
-        notes = excluded.notes`,
+        notes = excluded.notes
+      WHERE contacts.workspace_id = excluded.workspace_id`,
       [
         contact.id, workspaceId, contact.name, contact.title, contact.company, contact.email,
         contact.phone || '', contact.website || '', contact.channel, contact.sourceUrl,
@@ -870,7 +874,8 @@ export class AppPulseRepository {
         template_body = excluded.template_body,
         recipients_json = excluded.recipients_json,
         status = excluded.status,
-        stats_json = excluded.stats_json`,
+        stats_json = excluded.stats_json
+      WHERE campaigns.workspace_id = excluded.workspace_id`,
       [
         campaign.id, workspaceId, campaign.name, campaign.objective, campaign.tone,
         campaign.targetCategory, campaign.templateSubject, campaign.templateBody,
