@@ -139,8 +139,10 @@ app.post('/api/auth/register', async (req: any, res) => {
     }
 
     const userId = `usr_${randomBytes(16).toString('hex')}`;
-    const user = await repository.createUser({ id: userId, email, passwordHash: hashPassword(password), name });
-    const workspace = await repository.createWorkspaceForUser(userId, `${name}'s Workspace`);
+    const { user, workspace } = await repository.registerUserWithWorkspace(
+      { id: userId, email, passwordHash: hashPassword(password), name },
+      `${name}'s Workspace`
+    );
     const token = await repository.createSession(userId, workspace.id);
     setSessionCookie(res, token);
     return res.status(201).json({ user, workspaceId: workspace.id });
