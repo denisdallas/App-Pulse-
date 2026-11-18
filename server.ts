@@ -131,7 +131,7 @@ app.post('/api/auth/register', async (req: any, res) => {
     const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 12 || password.length > 256 || name.length < 2 || name.length > 100) {
+    if (!isValidRegistrationInput(email, password, name)) {
       return res.status(400).json({ error: 'Provide a valid email, a name, and a password of at least 12 characters.' });
     }
     if (await repository.getUserByEmail(email)) {
