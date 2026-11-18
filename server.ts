@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { verifyPassword } from './server/auth/security.ts';
+import { isValidRegistrationInput, isWorkspaceRequestAllowed, verifyPassword } from './server/auth/security.ts';
 import { db } from './server/db/database.ts';
 import { runMigrations, hashPassword } from './server/db/migrations.ts';
 import { repository } from './server/db/repository.ts';
@@ -94,7 +94,7 @@ app.use(async (req: any, res, next) => {
     }
 
     const requestedWorkspace = req.headers['x-workspace-id'];
-    if (requestedWorkspace && String(requestedWorkspace) !== session.workspaceId) {
+    if (!isWorkspaceRequestAllowed(session.workspaceId, requestedWorkspace ? String(requestedWorkspace) : undefined)) {
       return res.status(403).json({ error: 'Workspace access denied' });
     }
 
