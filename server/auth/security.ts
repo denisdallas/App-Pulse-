@@ -55,3 +55,22 @@ export function hashSessionToken(token: string): string {
 export function createSessionToken(): string {
   return crypto.randomBytes(32).toString('base64url');
 }
+
+export function isValidRegistrationInput(email: unknown, password: unknown, name: unknown): boolean {
+  return typeof email === 'string'
+    && /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email.trim())
+    && typeof password === 'string'
+    && password.length >= 12
+    && password.length <= 256
+    && typeof name === 'string'
+    && name.trim().length >= 2
+    && name.trim().length <= 100;
+}
+
+export function isWorkspaceRequestAllowed(sessionWorkspaceId: string, requestedWorkspaceId?: string): boolean {
+  return !requestedWorkspaceId || requestedWorkspaceId === sessionWorkspaceId;
+}
+
+export function isAdminRole(role: string | undefined): boolean {
+  return role === 'admin';
+}
