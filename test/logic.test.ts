@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { before } from 'node:test';
 import { pbkdf2Sync } from 'node:crypto';
 import { createSessionToken, hashPassword, hashSessionToken, isAdminRole, isValidRegistrationInput, isWorkspaceRequestAllowed, verifyPassword } from '../server/auth/security.ts';
 import assert from 'node:assert/strict';
@@ -10,6 +10,13 @@ import { compareVersions, isVersionInRange, calculateFutureOpportunityScore } fr
 import { Review, SuppressionRecord } from '../src/types.ts';
 import { GooglePlayConnector } from '../server/connectors/googleplay.ts';
 import { SEED_APPS } from '../server/seedData.ts';
+
+before(async () => {
+  const { runMigrations } = await import('../server/db/migrations.ts');
+  const { repository } = await import('../server/db/repository.ts');
+  await runMigrations();
+  await repository.initAndSeedIfEmpty();
+});
 
 test('Google Play connector reports unavailable reviews without fabricating records', async () => {
   const connector = new GooglePlayConnector();
