@@ -43,7 +43,7 @@ jobs:
           set -euo pipefail
           PORT=4179 NODE_ENV=test bun run dev > /tmp/apppulse-auth-smoke.log 2>&1 &
           server_pid=$!
-          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          trap 'status=$?; kill "$server_pid" 2>/dev/null || true; if [ "$status" -ne 0 ]; then echo "::group::API server startup log"; cat /tmp/apppulse-auth-smoke.log || true; echo "::endgroup::"; fi; exit "$status"' EXIT
           base="http://127.0.0.1:4179"
           demo_code=""
           for attempt in $(seq 1 30); do
