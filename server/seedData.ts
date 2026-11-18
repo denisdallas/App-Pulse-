@@ -1,4 +1,4 @@
-import { Application, Review, ComplaintTheme, Opportunity, Contact, Campaign, SuppressionRecord, ResearchProject } from '../src/types.ts';
+import type { Application, Review, ComplaintTheme, Opportunity, Contact, Campaign, SuppressionRecord, ResearchProject } from '../src/types.ts';
 import { generateReviewFingerprint } from '../src/lib/dedup.ts';
 import { calculateOpportunityScore } from '../src/lib/scoring.ts';
 

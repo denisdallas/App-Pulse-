@@ -1,4 +1,4 @@
-import { OpportunityScoreBreakdown } from '../types.ts';
+import type { OpportunityScoreBreakdown } from '../types.ts';
 
 /**
  * Calculates priority score for an opportunity based on:

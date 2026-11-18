@@ -17,6 +17,7 @@ export interface IDatabase {
 class RelationalDatabase implements IDatabase {
   private pgPool: pg.Pool | null = null;
   private readonly pgTransactionContext = new AsyncLocalStorage<pg.PoolClient>();
+  private readonly sqliteTransactionContext = new AsyncLocalStorage<boolean>();
   private sqliteDb: DatabaseSync | null = null;
   private engine: 'PostgreSQL' | 'SQLite (Durable Relational)' = 'SQLite (Durable Relational)';
 
@@ -56,11 +57,13 @@ class RelationalDatabase implements IDatabase {
   }
 
   private initSqlite() {
-    const dataDir = path.join(process.cwd(), 'server', 'data');
+    const dbPath = process.env.APP_SQLITE_PATH
+      ? path.resolve(process.env.APP_SQLITE_PATH)
+      : path.join(process.cwd(), 'server', 'data', 'apppulse.db');
+    const dataDir = path.dirname(dbPath);
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true });
     }
-    const dbPath = path.join(dataDir, 'apppulse.db');
     this.sqliteDb = new DatabaseSync(dbPath);
     // Enable WAL mode and foreign keys for ACID resilience and relational constraints
     this.sqliteDb.exec('PRAGMA journal_mode = WAL;');
@@ -126,6 +129,7 @@ class RelationalDatabase implements IDatabase {
 
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     if (this.pgPool) {
+      if (this.pgTransactionContext.getStore()) return fn();
       const client = await this.pgPool.connect();
       try {
         await client.query('BEGIN');
@@ -143,9 +147,10 @@ class RelationalDatabase implements IDatabase {
     }
 
     if (this.sqliteDb) {
+      if (this.sqliteTransactionContext.getStore()) return fn();
       this.sqliteDb.exec('BEGIN IMMEDIATE');
       try {
-        const result = await fn();
+        const result = await this.sqliteTransactionContext.run(true, fn);
         this.sqliteDb.exec('COMMIT');
         return result;
       } catch (e) {

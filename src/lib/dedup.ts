@@ -1,4 +1,4 @@
-import { Review } from '../types.ts';
+import type { Review } from '../types.ts';
 
 /**
  * Creates a normalized fingerprint string from text and rating.

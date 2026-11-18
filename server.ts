@@ -15,15 +15,33 @@ import { Application, Contact, Opportunity, CollectionJob, Campaign, ReportRecor
 import { generateResearchPdf, generateResearchXlsx, escapeSpreadsheetValue } from './server/reports/generator.ts';
 import { getEmailProviderConfig, sendOutreachEmail } from './server/outreach/delivery.ts';
 import { filterSuppressedRecipients } from './src/lib/suppression.ts';
-import { SEED_APPS, getSeedReviews, SEED_THEMES, getSeedOpportunities, SEED_FORECASTS } from './server/seedData.ts';
+import { buildPublicDemoPayload } from './server/demo.ts';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
+export const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+let initializationPromise: Promise<void> | null = null;
+
+export function initializeServer(): Promise<void> {
+  if (!initializationPromise) {
+    initializationPromise = db.transaction(async () => {
+      if (db.isPostgres()) {
+        // Serialize first-start migrations and seed data across serverless instances.
+        await db.query("SELECT pg_advisory_xact_lock(hashtext($1))", ['apppulse:startup']);
+      }
+      await runMigrations();
+      await repository.initAndSeedIfEmpty();
+    }).catch((error) => {
+      initializationPromise = null;
+      throw error;
+    });
+  }
+  return initializationPromise;
+}
 // Production traffic is expected to arrive through one trusted hosting proxy (for example, Vercel).
 // This ensures req.ip reflects the client address used by the shared authentication rate limiter.
 app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : false);
@@ -45,33 +63,14 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Public read-only product demo. This route uses isolated illustrative fixtures only:
 // it never reads from or writes to a visitor's or customer's workspace.
 app.get('/api/demo', (_req, res) => {
-  const apps = SEED_APPS.map((item) => ({ ...item, tags: [...item.tags], isDemo: true, provenance: 'seed' as const }));
-  const reviews = getSeedReviews().map((item) => ({ ...item, isDemo: true, provenance: 'seed' as const }));
-  const themes = SEED_THEMES.map((item) => ({ ...item, isDemo: true }));
-  const opportunities = getSeedOpportunities().map((item) => ({ ...item, isDemo: true }));
-  const forecasts = SEED_FORECASTS.map((item) => ({ ...item }));
+  const payload = buildPublicDemoPayload();
   res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-  res.json({
-    mode: 'demo',
-    notice: 'Illustrative sample records only. These are not live marketplace results or verified current metrics.',
-    stats: {
-      totalApps: apps.length,
-      totalReviews: reviews.length,
-      negativeReviews: reviews.filter((item) => item.starRating <= 2).length,
-      totalThemes: themes.length,
-      totalOpportunities: opportunities.length,
-    },
-    apps,
-    reviews: reviews.slice(0, 30),
-    themes,
-    opportunities,
-    forecasts,
-  });
+  res.json(payload);
 });
 
 // Ensure reports directory exists
 const reportsDir = path.join(__dirname, 'server', 'data', 'reports');
-if (!fs.existsSync(reportsDir)) {
+if (process.env.VERCEL !== '1' && !fs.existsSync(reportsDir)) {
   fs.mkdirSync(reportsDir, { recursive: true });
 }
 
@@ -1071,8 +1070,7 @@ app.get('/api/export', async (req: any, res) => {
 
 async function startServer() {
   // 1. Run migrations and initialize database
-  await runMigrations();
-  await repository.initAndSeedIfEmpty();
+  await initializeServer();
 
   const isProduction = process.env.NODE_ENV === 'production';
 
@@ -1096,7 +1094,10 @@ async function startServer() {
   });
 }
 
-startServer().catch((err) => {
-  console.error('[AppPulse Server] Fatal startup error:', err);
-  process.exit(1);
-});
+const isDirectExecution = process.argv[1] && path.resolve(process.argv[1]) === __filename;
+if (process.env.VERCEL !== '1' && isDirectExecution) {
+  startServer().catch((err) => {
+    console.error('[AppPulse Server] Fatal startup error:', err);
+    process.exit(1);
+  });
+}
