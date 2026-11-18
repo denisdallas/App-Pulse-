@@ -64,3 +64,8 @@ Latest completed run at the time of this document: **PASS** for all five stages.
 - Validate the migration against a copy of the production database before rollout, especially where the existing administrator account has been customized.
 - PostgreSQL is required for a shared rate-limit store across multiple production instances. SQLite remains suitable only for a single-process deployment. Configure `DATABASE_URL` and a strong `AUTH_RATE_LIMIT_SECRET` consistently across all instances. The production server trusts exactly one proxy hop; deployments with a different proxy topology must review that setting before rollout.
 - The branch is still a draft pull request and must not be merged until the deployment owner completes the database and environment-secret review.
+
+
+## Public read-only demo
+
+The unauthenticated `GET /api/demo` endpoint exposes only isolated illustrative fixtures from the repository's seed dataset. It does not query, mutate, or expose any registered user's workspace. The endpoint and demo UI are explicitly labelled as sample data, not live marketplace results or verified current metrics. All research, collection, export, outreach, settings, and workspace APIs remain behind session authentication. The public demo is read-only and offers visitors a path to create a separate private workspace or sign in.
