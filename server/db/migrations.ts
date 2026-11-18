@@ -289,21 +289,6 @@ async function seedDefaultAuthAndWorkspace() {
     );
   }
 
-  // Remove only the exact legacy seeded account whose password still matches
-  // the published development credential. Never delete a user-customized account.
-  const legacyHash = '0'; 
-  const legacyUsers = await db.query('SELECT id, password_hash FROM users WHERE email = $1', ['admin@apppulse.io']);
-  if (legacyUsers.length > 0) {
-    const { verifyPassword } = await import('../auth/security.ts');
-    for (const user of legacyUsers) {
-      if (verifyPassword('AppPulse2026!', user.password_hash).valid) {
-        await db.execute('DELETE FROM sessions WHERE user_id = $1', [user.id]);
-        await db.execute('DELETE FROM workspace_members WHERE user_id = $1', [user.id]);
-        await db.execute('DELETE FROM users WHERE id = $1', [user.id]);
-      }
-    }
-  }
-
   // Optional one-time bootstrap: credentials must be explicitly supplied through
   // deployment secrets. No default administrator or password is created.
   const bootstrapEmail = process.env.APP_BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
