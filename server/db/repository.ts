@@ -208,6 +208,31 @@ export class AppPulseRepository {
     return { id: r.id, name: r.name, slug: r.slug, createdAt: r.created_at };
   }
 
+  async registerUserWithWorkspace(user: { id: string; email: string; passwordHash: string; name: string }, workspaceName: string): Promise<{ user: User; workspace: Workspace }> {
+    const now = new Date().toISOString();
+    const email = user.email.toLowerCase().trim();
+    const workspaceId = `ws_${crypto.randomBytes(12).toString('hex')}`;
+    const slug = `workspace-${crypto.randomBytes(8).toString('hex')}`;
+    await db.transaction(async () => {
+      await db.execute(
+        'INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
+        [user.id, email, user.passwordHash, user.name, 'member', now]
+      );
+      await db.execute(
+        'INSERT INTO workspaces (id, name, slug, created_at) VALUES ($1, $2, $3, $4)',
+        [workspaceId, workspaceName, slug, now]
+      );
+      await db.execute(
+        'INSERT INTO workspace_members (workspace_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)',
+        [workspaceId, user.id, 'admin', now]
+      );
+    });
+    return {
+      user: { id: user.id, email, name: user.name, role: 'admin', createdAt: now },
+      workspace: { id: workspaceId, name: workspaceName, slug, createdAt: now },
+    };
+  }
+
   async createWorkspaceForUser(userId: string, name: string): Promise<Workspace> {
     const now = new Date().toISOString();
     const id = `ws_${crypto.randomBytes(12).toString('hex')}`;
