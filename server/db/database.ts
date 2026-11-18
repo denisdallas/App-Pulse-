@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import pg from 'pg';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 export interface IDatabase {
   query<T = any>(sql: string, params?: any[]): Promise<T[]>;
@@ -14,6 +15,7 @@ export interface IDatabase {
 
 class RelationalDatabase implements IDatabase {
   private pgPool: pg.Pool | null = null;
+  private readonly pgTransactionContext = new AsyncLocalStorage<pg.PoolClient>();
   private sqliteDb: DatabaseSync | null = null;
   private engine: 'PostgreSQL' | 'SQLite (Durable Relational)' = 'SQLite (Durable Relational)';
 
@@ -69,7 +71,10 @@ class RelationalDatabase implements IDatabase {
 
   async query<T = any>(sql: string, params: any[] = []): Promise<T[]> {
     if (this.pgPool) {
-      const res = await this.pgPool.query(sql, params);
+      const client = this.pgTransactionContext.getStore();
+      const res = client
+        ? await client.query(sql, params)
+        : await this.pgPool.query(sql, params);
       return res.rows as T[];
     }
 
@@ -86,7 +91,10 @@ class RelationalDatabase implements IDatabase {
 
   async execute(sql: string, params: any[] = []): Promise<{ rowCount: number }> {
     if (this.pgPool) {
-      const res = await this.pgPool.query(sql, params);
+      const client = this.pgTransactionContext.getStore();
+      const res = client
+        ? await client.query(sql, params)
+        : await this.pgPool.query(sql, params);
       return { rowCount: res.rowCount || 0 };
     }
 
@@ -105,7 +113,9 @@ class RelationalDatabase implements IDatabase {
       const client = await this.pgPool.connect();
       try {
         await client.query('BEGIN');
-        const result = await fn();
+        // Route every db.query/db.execute call made inside fn through this
+        // checked-out client so the work is actually covered by BEGIN/COMMIT.
+        const result = await this.pgTransactionContext.run(client, fn);
         await client.query('COMMIT');
         return result;
       } catch (e) {
