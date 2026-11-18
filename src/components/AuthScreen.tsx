@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 
 interface AuthScreenProps {
   onAuthenticated: () => void;
+  onViewDemo: () => void;
 }
 
-export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthenticated }) => {
+export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthenticated, onViewDemo }) => {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -68,6 +69,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthenticated }) => {
             </button>
           </form>
         </div>
+        <button type="button" onClick={onViewDemo} className="mt-5 w-full text-center text-sm text-indigo-300 hover:text-indigo-200">← Back to public demo</button>
         <p className="mt-5 text-center text-xs text-slate-500">Your session is protected by an HttpOnly, same-site cookie.</p>
       </section>
     </main>
