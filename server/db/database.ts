@@ -22,19 +22,34 @@ class RelationalDatabase implements IDatabase {
 
   constructor() {
     const databaseUrl = process.env.DATABASE_URL;
+    const isProduction = process.env.NODE_ENV === 'production';
+
+    // Vercel/serverless instances do not provide durable local storage. Never
+    // silently fall back to per-instance SQLite in production: doing so would
+    // split users, sessions, workspace data, and rate limits across instances.
+    if (isProduction && !databaseUrl) {
+      throw new Error('[Database] DATABASE_URL is required in production; refusing ephemeral SQLite fallback.');
+    }
 
     if (databaseUrl && (databaseUrl.startsWith('postgres://') || databaseUrl.startsWith('postgresql://'))) {
       try {
         this.pgPool = new pg.Pool({
           connectionString: databaseUrl,
-          ssl: process.env.NODE_ENV === 'production' && !databaseUrl.includes('localhost') ? { rejectUnauthorized: false } : undefined,
+          ssl: isProduction && !databaseUrl.includes('localhost') ? { rejectUnauthorized: false } : undefined,
         });
         this.engine = 'PostgreSQL';
         console.log('[Database] Initialized PostgreSQL connection pool');
       } catch (err: any) {
-        console.warn('[Database] Failed to initialize PostgreSQL pool, falling back to durable SQLite:', err.message);
+        if (isProduction) {
+          throw new Error('[Database] Failed to initialize PostgreSQL in production; refusing SQLite fallback.', { cause: err });
+        }
+        console.warn('[Database] Failed to initialize PostgreSQL pool, falling back to durable SQLite in development:', err.message);
         this.initSqlite();
       }
+    } else if (databaseUrl) {
+      if (isProduction) throw new Error('[Database] DATABASE_URL must use postgres:// or postgresql:// in production.');
+      console.warn('[Database] Unsupported DATABASE_URL scheme; using SQLite for local development.');
+      this.initSqlite();
     } else {
       this.initSqlite();
     }
