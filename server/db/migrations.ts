@@ -1,10 +1,8 @@
 import { db } from './database.ts';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
+import { hashPassword } from '../auth/security.ts';
 
-export function hashPassword(password: string): string {
-  const salt = 'apppulse_salt_2026';
-  return crypto.pbkdf2Sync(password, salt, 10000, 32, 'sha256').toString('hex');
-}
+export { hashPassword } from '../auth/security.ts';
 
 export async function runMigrations(): Promise<void> {
   console.log(`[Migrations] Running relational database migrations on ${db.getEngineName()}...`);
@@ -15,7 +13,7 @@ export async function runMigrations(): Promise<void> {
       email TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       name TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'admin',
+      role TEXT NOT NULL DEFAULT 'member',
       created_at TEXT NOT NULL
     );`,
 
@@ -33,6 +31,9 @@ export async function runMigrations(): Promise<void> {
       joined_at TEXT NOT NULL,
       PRIMARY KEY (workspace_id, user_id)
     );`,
+
+    `CREATE TABLE IF NOT EXISTS auth_rate_limits (key_hash TEXT PRIMARY KEY, count INTEGER NOT NULL, reset_at BIGINT NOT NULL);`,
+    `CREATE INDEX IF NOT EXISTS idx_auth_rate_limits_reset ON auth_rate_limits (reset_at);`,
 
     `CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY,
@@ -270,41 +271,60 @@ export async function runMigrations(): Promise<void> {
     `CREATE INDEX IF NOT EXISTS idx_opps_ws ON opportunities (workspace_id);`,
   ];
 
-  for (const sql of ddlStatements) {
-    await db.execute(sql);
-  }
+  // Apply schema changes and bootstrap adjustments atomically. If any DDL or
+  // seed operation fails, roll back the entire migration rather than leaving a
+  // partially initialized database behind.
+  await db.transaction(async () => {
+    for (const sql of ddlStatements) {
+      await db.execute(sql);
+    }
 
-  // Ensure default admin user and workspace exist
-  await seedDefaultAuthAndWorkspace();
+    await seedDefaultAuthAndWorkspace();
+  });
+
   console.log('[Migrations] Relational schema and initial constraints applied successfully.');
 }
 
 async function seedDefaultAuthAndWorkspace() {
   const timestamp = new Date().toISOString();
   const defaultWsId = 'ws_default';
-  const defaultUserId = 'usr_admin_01';
 
-  // Check if default workspace exists
   const existingWs = await db.query('SELECT id FROM workspaces WHERE id = $1', [defaultWsId]);
   if (existingWs.length === 0) {
     await db.execute(
       'INSERT INTO workspaces (id, name, slug, created_at) VALUES ($1, $2, $3, $4)',
-      [defaultWsId, 'Main Production Workspace', 'main-prod', timestamp]
+      [defaultWsId, 'Main Workspace', 'main-workspace', timestamp]
     );
   }
 
-  // Check if default admin user exists
-  const existingUser = await db.query('SELECT id FROM users WHERE id = $1', [defaultUserId]);
-  if (existingUser.length === 0) {
-    const passwordHash = hashPassword('AppPulse2026!');
-    await db.execute(
-      'INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
-      [defaultUserId, 'admin@apppulse.io', passwordHash, 'Denis Dallas (Lead)', 'admin', timestamp]
-    );
+  // Disable the exact legacy seeded administrator credential without deleting the account or its data.
+  const legacySeededAdmin = await db.query(
+    'SELECT id FROM users WHERE id = $1 AND email = $2 AND password_hash = $3',
+    ['usr_admin_01', 'admin@apppulse.io', '591655aed082b3c8a45834fc104d3ba7da7a4dc60f267a82a2f6dbed3b64c6a8']
+  );
+  if (legacySeededAdmin.length > 0) {
+    const id = legacySeededAdmin[0].id;
+    await db.execute('UPDATE users SET password_hash = $1, role = $2 WHERE id = $3', [hashPassword(crypto.randomBytes(48).toString('hex')), 'member', id]);
+    await db.execute('UPDATE workspace_members SET role = $1 WHERE user_id = $2 AND workspace_id = $3', ['member', id, defaultWsId]);
+  }
 
-    await db.execute(
-      'INSERT INTO workspace_members (workspace_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)',
-      [defaultWsId, defaultUserId, 'admin', timestamp]
-    );
+  // Optional one-time bootstrap: credentials must be explicitly supplied through
+  // deployment secrets. No default administrator or password is created.
+  const bootstrapEmail = process.env.APP_BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
+  const bootstrapPassword = process.env.APP_BOOTSTRAP_ADMIN_PASSWORD;
+  const bootstrapName = process.env.APP_BOOTSTRAP_ADMIN_NAME?.trim() || 'Workspace Administrator';
+  if (bootstrapEmail && bootstrapPassword && bootstrapPassword.length >= 12) {
+    const existingAdmins = await db.query("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
+    if (existingAdmins.length === 0) {
+      const userId = `usr_${crypto.randomBytes(16).toString('hex')}`;
+      await db.execute(
+        'INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
+        [userId, bootstrapEmail, hashPassword(bootstrapPassword), bootstrapName, 'admin', timestamp]
+      );
+      await db.execute(
+        'INSERT INTO workspace_members (workspace_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)',
+        [defaultWsId, userId, 'admin', timestamp]
+      );
+    }
   }
 }

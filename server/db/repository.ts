@@ -19,7 +19,8 @@ import {
 } from '../../src/types.ts';
 import { generateReviewFingerprint } from '../../src/lib/dedup.ts';
 import { SEED_APPS, getSeedReviews, SEED_THEMES, getSeedOpportunities, SEED_CONTACTS, SEED_CAMPAIGNS, SEED_SUPPRESSION, SEED_PROJECTS } from '../seedData.ts';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
+import { createSessionToken, hashSessionToken } from '../auth/security.ts';
 
 export class AppPulseRepository {
   private defaultWorkspaceId = 'ws_default';
@@ -189,6 +190,60 @@ export class AppPulseRepository {
 
   // ---------------- WORKSPACES & USERS ----------------
 
+  async getWorkspacesForUser(userId: string): Promise<Workspace[]> {
+    const rows = await db.query(
+      'SELECT w.* FROM workspaces w INNER JOIN workspace_members wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 ORDER BY w.created_at ASC',
+      [userId]
+    );
+    return rows.map((r: any) => ({ id: r.id, name: r.name, slug: r.slug, createdAt: r.created_at }));
+  }
+
+  async getFirstWorkspaceForUser(userId: string): Promise<Workspace | null> {
+    const rows = await db.query(
+      'SELECT w.* FROM workspaces w INNER JOIN workspace_members wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 ORDER BY w.created_at ASC LIMIT 1',
+      [userId]
+    );
+    if (!rows.length) return null;
+    const r = rows[0];
+    return { id: r.id, name: r.name, slug: r.slug, createdAt: r.created_at };
+  }
+
+  async registerUserWithWorkspace(user: { id: string; email: string; passwordHash: string; name: string }, workspaceName: string): Promise<{ user: User; workspace: Workspace }> {
+    const now = new Date().toISOString();
+    const email = user.email.toLowerCase().trim();
+    const workspaceId = `ws_${crypto.randomBytes(12).toString('hex')}`;
+    const slug = `workspace-${crypto.randomBytes(8).toString('hex')}`;
+    await db.transaction(async () => {
+      await db.execute(
+        'INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
+        [user.id, email, user.passwordHash, user.name, 'member', now]
+      );
+      await db.execute(
+        'INSERT INTO workspaces (id, name, slug, created_at) VALUES ($1, $2, $3, $4)',
+        [workspaceId, workspaceName, slug, now]
+      );
+      await db.execute(
+        'INSERT INTO workspace_members (workspace_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)',
+        [workspaceId, user.id, 'admin', now]
+      );
+    });
+    return {
+      user: { id: user.id, email, name: user.name, role: 'admin', createdAt: now },
+      workspace: { id: workspaceId, name: workspaceName, slug, createdAt: now },
+    };
+  }
+
+  async createWorkspaceForUser(userId: string, name: string): Promise<Workspace> {
+    const now = new Date().toISOString();
+    const id = `ws_${crypto.randomBytes(12).toString('hex')}`;
+    const slug = `workspace-${crypto.randomBytes(8).toString('hex')}`;
+    await db.transaction(async () => {
+      await db.execute('INSERT INTO workspaces (id, name, slug, created_at) VALUES ($1, $2, $3, $4)', [id, name, slug, now]);
+      await db.execute('INSERT INTO workspace_members (workspace_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)', [id, userId, 'admin', now]);
+    });
+    return { id, name, slug, createdAt: now };
+  }
+
   async getWorkspaces(): Promise<Workspace[]> {
     const rows = await db.query('SELECT * FROM workspaces ORDER BY created_at ASC');
     return rows.map((r: any) => ({
@@ -229,55 +284,55 @@ export class AppPulseRepository {
     };
   }
 
-  async createUser(user: { id: string; email: string; passwordHash: string; name: string; role?: string }): Promise<User> {
+  async createUser(user: { id: string; email: string; passwordHash: string; name: string }): Promise<User> {
     const now = new Date().toISOString();
+    const email = user.email.toLowerCase().trim();
     await db.execute(
       'INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
-      [user.id, user.email.toLowerCase().trim(), user.passwordHash, user.name, user.role || 'member', now]
+      [user.id, email, user.passwordHash, user.name, 'member', now]
     );
+    return { id: user.id, email, name: user.name, role: 'member', createdAt: now };
+  }
 
-    // Add user to default workspace
-    await db.execute(
-      'INSERT INTO workspace_members (workspace_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)',
-      [this.defaultWorkspaceId, user.id, user.role || 'member', now]
-    );
-
-    return {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: (user.role as any) || 'member',
-      createdAt: now,
-    };
+  async updateUserPasswordHash(userId: string, passwordHash: string): Promise<void> {
+    await db.execute('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, userId]);
   }
 
   async createSession(userId: string, workspaceId: string): Promise<string> {
-    const token = `sess_${crypto.randomBytes(24).toString('hex')}`;
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 days
-    const now = new Date().toISOString();
+    const membership = await db.query(
+      'SELECT role FROM workspace_members WHERE user_id = $1 AND workspace_id = $2',
+      [userId, workspaceId]
+    );
+    if (!membership.length) throw new Error('User is not a member of the requested workspace');
 
+    const token = createSessionToken();
+    const tokenHash = hashSessionToken(token);
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const now = new Date().toISOString();
     await db.execute(
       'INSERT INTO sessions (token, user_id, workspace_id, expires_at, created_at) VALUES ($1, $2, $3, $4, $5)',
-      [token, userId, workspaceId, expiresAt, now]
+      [tokenHash, userId, workspaceId, expiresAt, now]
     );
     return token;
   }
 
   async validateSession(token: string): Promise<{ user: User; workspaceId: string } | null> {
+    if (typeof token !== 'string' || token.length < 32 || token.length > 256) return null;
+    const tokenHash = hashSessionToken(token);
     const rows = await db.query(
-      `SELECT s.workspace_id, u.id, u.email, u.name, u.role, u.created_at, s.expires_at 
-       FROM sessions s 
-       JOIN users u ON s.user_id = u.id 
+      `SELECT s.workspace_id, u.id, u.email, u.name, wm.role, u.created_at, s.expires_at
+       FROM sessions s
+       JOIN users u ON s.user_id = u.id
+       INNER JOIN workspace_members wm ON wm.user_id = u.id AND wm.workspace_id = s.workspace_id
        WHERE s.token = $1`,
-      [token]
+      [tokenHash]
     );
 
     if (rows.length === 0) return null;
     const r = rows[0];
-
-    // Check expiration
-    if (new Date(r.expires_at).getTime() < Date.now()) {
-      await db.execute('DELETE FROM sessions WHERE token = $1', [token]);
+    const expiresAt = Date.parse(r.expires_at);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      await db.execute('DELETE FROM sessions WHERE token = $1', [tokenHash]);
       return null;
     }
 
@@ -294,7 +349,8 @@ export class AppPulseRepository {
   }
 
   async deleteSession(token: string): Promise<void> {
-    await db.execute('DELETE FROM sessions WHERE token = $1', [token]);
+    if (typeof token !== 'string' || token.length < 32 || token.length > 256) return;
+    await db.execute('DELETE FROM sessions WHERE token = $1', [hashSessionToken(token)]);
   }
 
   // ---------------- APPLICATIONS ----------------
@@ -381,7 +437,8 @@ export class AppPulseRepository {
         last_updated = excluded.last_updated,
         current_version = excluded.current_version,
         store_url = excluded.store_url,
-        tags_json = excluded.tags_json`,
+        tags_json = excluded.tags_json
+      WHERE applications.workspace_id = excluded.workspace_id`,
       [
         app.id, workspaceId, app.name, app.iconUrl || '', app.publisher, app.marketplace, app.description || '',
         app.category, app.rating, app.ratingCount, app.reviewCount, app.platform, app.releaseDate,
@@ -519,7 +576,8 @@ export class AppPulseRepository {
         representative_quotes_json = excluded.representative_quotes_json,
         evidence_review_ids_json = excluded.evidence_review_ids_json,
         severity = excluded.severity,
-        confidence_score = excluded.confidence_score`,
+        confidence_score = excluded.confidence_score
+      WHERE complaint_themes.workspace_id = excluded.workspace_id`,
       [
         theme.id, workspaceId, theme.title, theme.category, theme.summary, theme.reviewCount,
         JSON.stringify(theme.affectedApps || []), JSON.stringify(theme.affectedAppNames || []),
@@ -588,7 +646,8 @@ export class AppPulseRepository {
         proposed_concept = excluded.proposed_concept,
         priority_score = excluded.priority_score,
         score_breakdown_json = excluded.score_breakdown_json,
-        status = excluded.status`,
+        status = excluded.status
+      WHERE opportunities.workspace_id = excluded.workspace_id`,
       [
         opp.id, workspaceId, opp.title, opp.problemStatement, opp.targetUser,
         JSON.stringify(opp.supportingAppIds || []), JSON.stringify(opp.supportingAppNames || []),
@@ -740,7 +799,8 @@ export class AppPulseRepository {
         company = excluded.company,
         email = excluded.email,
         status = excluded.status,
-        notes = excluded.notes`,
+        notes = excluded.notes
+      WHERE contacts.workspace_id = excluded.workspace_id`,
       [
         contact.id, workspaceId, contact.name, contact.title, contact.company, contact.email,
         contact.phone || '', contact.website || '', contact.channel, contact.sourceUrl,
@@ -814,7 +874,8 @@ export class AppPulseRepository {
         template_body = excluded.template_body,
         recipients_json = excluded.recipients_json,
         status = excluded.status,
-        stats_json = excluded.stats_json`,
+        stats_json = excluded.stats_json
+      WHERE campaigns.workspace_id = excluded.workspace_id`,
       [
         campaign.id, workspaceId, campaign.name, campaign.objective, campaign.tone,
         campaign.targetCategory, campaign.templateSubject, campaign.templateBody,

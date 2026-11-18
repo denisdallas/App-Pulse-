@@ -27,7 +27,9 @@ export type ConnectorStatus =
   | 'connected_verified'
   | 'rate_limited'
   | 'temporarily_unavailable'
-  | 'error';
+  | 'error'
+  | 'partially_supported'
+  | 'degraded';
 
 export interface ConnectorHealth {
   status: ConnectorStatus;
@@ -46,4 +48,11 @@ export interface MarketplaceConnector {
   searchApps(options: SearchOptions): Promise<Application[]>;
   fetchReviews(appId: string, options?: ReviewFetchOptions): Promise<FetchReviewsResult>;
   getStatus(): Promise<ConnectorHealth>;
+}
+
+export class UnsupportedConnectorError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedConnectorError';
+  }
 }

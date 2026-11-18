@@ -25,8 +25,13 @@ import { OpportunityFinderView } from './components/OpportunityFinderView.tsx';
 import { OutreachStudioView } from './components/OutreachStudioView.tsx';
 import { ProjectsView } from './components/ProjectsView.tsx';
 import { SettingsView } from './components/SettingsView.tsx';
+import { AuthScreen } from './components/AuthScreen.tsx';
+import { DemoScreen } from './components/DemoScreen.tsx';
 
 export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [showAuth, setShowAuth] = useState(false);
   const [currentTab, setCurrentTab] = useState<ViewTab>('dashboard');
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [apps, setApps] = useState<Application[]>([]);
@@ -108,8 +113,42 @@ export default function App() {
   };
 
   useEffect(() => {
-    loadAllData();
+    let active = true;
+    fetch('/api/auth/me', { credentials: 'same-origin' })
+      .then((response) => {
+        if (!active) return;
+        setIsAuthenticated(response.ok);
+      })
+      .catch(() => {
+        if (active) setIsAuthenticated(false);
+      })
+      .finally(() => {
+        if (active) setAuthChecking(false);
+      });
+    return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) loadAllData();
+  }, [isAuthenticated]);
+
+  const handleLogout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => undefined);
+    setIsAuthenticated(false);
+    setStats(null);
+    setApps([]);
+    setReviews([]);
+    setThemes([]);
+    setForecasts([]);
+    setOpportunities([]);
+    setContacts([]);
+    setCampaigns([]);
+    setSuppression([]);
+    setProjects([]);
+    setJobs([]);
+    setAuditLogs([]);
+    setSettingsData(null);
+  };
 
   // Handlers
   const handleToggleCompare = (appId: string) => {
@@ -391,6 +430,18 @@ export default function App() {
     showToast(`Downloading ${type} as ${format.toUpperCase()}...`);
   };
 
+  if (authChecking) {
+    return <div className="min-h-screen bg-slate-950 text-slate-300 flex items-center justify-center text-sm">Checking secure session…</div>;
+  }
+
+  if (!isAuthenticated && !showAuth) {
+    return <DemoScreen onCreateAccount={() => setShowAuth(true)} onSignIn={() => setShowAuth(true)} />;
+  }
+
+  if (!isAuthenticated) {
+    return <AuthScreen onAuthenticated={() => { setIsAuthenticated(true); setShowAuth(false); }} onViewDemo={() => setShowAuth(false)} />;
+  }
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-950 font-sans text-slate-100 antialiased">
       {/* Toast Notification */}
@@ -418,6 +469,8 @@ export default function App() {
         <Header
           currentTab={currentTab}
           onRefresh={loadAllData}
+          onExport={handleExport}
+          onLogout={handleLogout}
           onRunAI={currentTab === 'analytics' || currentTab === 'dashboard' ? handleRunAIAnalysis : undefined}
           isAnalyzing={isAnalyzing}
           onToggleMobileMenu={() => setMobileMenuOpen(!mobileMenuOpen)}

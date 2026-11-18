@@ -18,7 +18,7 @@ export function generateResearchReport(input: ResearchReportInput): Promise<Buff
     document.on('end', () => resolve(Buffer.concat(chunks)));
     document.on('error', reject);
 
-    const liveReviews = input.reviews.filter((review) => review.provenance === 'live_marketplace');
+    const liveReviews = input.reviews.filter((review) => review.provenance === 'live');
     const negativeReviews = input.reviews.filter((review) => review.starRating <= 2);
     const counts = new Map<string, number>();
     for (const review of negativeReviews) {

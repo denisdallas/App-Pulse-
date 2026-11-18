@@ -6,6 +6,7 @@ interface HeaderProps {
   currentTab: ViewTab;
   onRefresh: () => void;
   onExport: (type: 'reviews' | 'opportunities' | 'contacts') => void;
+  onLogout?: () => void;
   onRunAI?: () => void;
   isAnalyzing?: boolean;
   onToggleMobileMenu?: () => void;
@@ -23,7 +24,7 @@ const tabTitles: Record<ViewTab, { title: string; subtitle: string }> = {
   settings: { title: 'System & Connector Settings', subtitle: 'Marketplace connectors, rate-limits, Gemini model status, and audit logs' },
 };
 
-export const Header: React.FC<HeaderProps> = ({ currentTab, onRefresh, onExport, onRunAI, isAnalyzing, onToggleMobileMenu }) => {
+export const Header: React.FC<HeaderProps> = ({ currentTab, onRefresh, onExport, onLogout, onRunAI, isAnalyzing, onToggleMobileMenu }) => {
   const current = tabTitles[currentTab];
 
   return (
@@ -81,6 +82,16 @@ export const Header: React.FC<HeaderProps> = ({ currentTab, onRefresh, onExport,
           </button>
         )}
 
+
+        {onLogout && (
+          <button
+            onClick={onLogout}
+            className="px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:text-white border border-slate-700 rounded-lg hover:bg-slate-800 transition-colors"
+            title="Sign out"
+          >
+            Sign out
+          </button>
+        )}
 
         <button
           onClick={() => onExport(currentTab === 'opportunities' ? 'opportunities' : currentTab === 'outreach' ? 'contacts' : 'reviews')}

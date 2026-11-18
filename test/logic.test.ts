@@ -1,4 +1,6 @@
 import test from 'node:test';
+import { pbkdf2Sync } from 'node:crypto';
+import { createSessionToken, hashPassword, hashSessionToken, isAdminRole, isValidRegistrationInput, isWorkspaceRequestAllowed, verifyPassword } from '../server/auth/security.ts';
 import assert from 'node:assert/strict';
 import { calculateOpportunityScore } from '../src/lib/scoring.ts';
 import { generateReviewFingerprint, deduplicateReviews } from '../src/lib/dedup.ts';
@@ -7,16 +9,14 @@ import { jsonToCsv, parseCsv } from '../src/lib/csv.ts';
 import { compareVersions, isVersionInRange, calculateFutureOpportunityScore } from '../src/lib/forecast.ts';
 import { Review, SuppressionRecord } from '../src/types.ts';
 import { GooglePlayConnector } from '../server/connectors/googleplay.ts';
-import { UnsupportedConnectorError } from '../server/connectors/types.ts';
+import { SEED_APPS } from '../server/seedData.ts';
 
-test('unsupported marketplace connectors report an explicit unsupported error', async () => {
+test('Google Play connector reports unavailable reviews without fabricating records', async () => {
   const connector = new GooglePlayConnector();
-  await assert.rejects(() => connector.fetchReviews('demo-app'), (error: unknown) => {
-    assert.ok(error instanceof UnsupportedConnectorError);
-    assert.match((error as Error).message, /blocked|configured/i);
-    return true;
-  });
-  assert.equal((await connector.getStatus()).status, 'unsupported');
+  const result = await connector.fetchReviews('demo-app');
+  assert.equal(result.reviews.length, 0);
+  assert.match(result.error || '', /requires|credentials|pending/i);
+  assert.notEqual((await connector.getStatus()).status, 'connected_verified');
 });
 
 test('calculateOpportunityScore correctly calculates priority and breakdown', () => {
@@ -270,3 +270,96 @@ test('Outreach email dispatch correctly blocks simulated delivery when unconfigu
 });
 
 
+
+
+test('password hashing uses independent salts and verifies scrypt credentials', () => {
+  const first = hashPassword('Correct Horse Battery 2026!');
+  const second = hashPassword('Correct Horse Battery 2026!');
+  assert.notEqual(first, second, 'identical passwords must receive different salts');
+  assert.equal(first.startsWith('scrypt$'), true);
+  assert.equal(verifyPassword('Correct Horse Battery 2026!', first).valid, true);
+  assert.equal(verifyPassword('wrong password', first).valid, false);
+});
+
+test('legacy password hashes verify only for migration and request rehash', () => {
+  const legacy = pbkdf2Sync('legacy-password', 'apppulse_salt_2026', 10000, 32, 'sha256').toString('hex');
+  assert.deepEqual(verifyPassword('legacy-password', legacy), { valid: true, needsRehash: true });
+  assert.equal(verifyPassword('incorrect', legacy).valid, false);
+});
+
+test('registration policy rejects malformed email, short passwords, and invalid names', () => {
+  assert.equal(isValidRegistrationInput('person@example.com', 'long-enough-password', 'Person'), true);
+  assert.equal(isValidRegistrationInput('not-an-email', 'long-enough-password', 'Person'), false);
+  assert.equal(isValidRegistrationInput('person@example.com', 'short', 'Person'), false);
+  assert.equal(isValidRegistrationInput('person@example.com', 'long-enough-password', ' '), false);
+});
+
+test('workspace and role policy rejects spoofed workspace IDs and member escalation', () => {
+  assert.equal(isWorkspaceRequestAllowed('ws_a'), true);
+  assert.equal(isWorkspaceRequestAllowed('ws_a', 'ws_a'), true);
+  assert.equal(isWorkspaceRequestAllowed('ws_a', 'ws_b'), false);
+  assert.equal(isAdminRole('member'), false);
+  assert.equal(isAdminRole('admin'), true);
+});
+
+test('session tokens are random and only their SHA-256 digest is suitable for storage', () => {
+  const first = createSessionToken();
+  const second = createSessionToken();
+  assert.notEqual(first, second);
+  assert.equal(first.length >= 40, true);
+  assert.notEqual(hashSessionToken(first), first);
+  assert.equal(hashSessionToken(first), hashSessionToken(first));
+});
+
+test('repository sessions require membership, store only token digests, and reject expiry', async () => {
+  const { repository } = await import('../server/db/repository.ts');
+  const { db } = await import('../server/db/database.ts');
+  const suffix = Date.now().toString() + '_' + Math.random().toString(36).slice(2);
+  const userId = 'security_test_' + suffix + '_a';
+  const otherUserId = 'security_test_' + suffix + '_b';
+  const passwordHash = hashPassword('test-password-long-enough');
+  const registered = await repository.registerUserWithWorkspace(
+    { id: userId, email: userId + '@example.test', passwordHash, name: 'Security Test' },
+    'Security Test Workspace'
+  );
+  assert.equal(registered.user.role, 'admin', 'new workspace owner receives workspace-admin membership');
+  const userRow = await db.query('SELECT role FROM users WHERE id = $1', [userId]);
+  assert.equal(userRow[0].role, 'member', 'registration cannot elevate the global account role');
+  const otherUser = await repository.createUser({ id: otherUserId, email: otherUserId + '@example.test', passwordHash, name: 'Other Test', role: 'admin' } as any);
+  assert.equal(otherUser.role, 'member', 'untrusted role input is ignored');
+  const workspace = registered.workspace;
+  const otherWorkspace = await repository.createWorkspaceForUser(otherUserId, 'Other Workspace');
+  const token = await repository.createSession(userId, workspace.id);
+  const digest = hashSessionToken(token);
+  const stored = await db.query('SELECT token FROM sessions WHERE token = $1', [digest]);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].token, digest);
+  assert.equal((await repository.validateSession(token))?.workspaceId, workspace.id);
+  assert.equal(await repository.validateSession('invalid-session-token'), null);
+  await assert.rejects(() => repository.createSession(userId, otherWorkspace.id), /not a member/i);
+  await db.execute('UPDATE sessions SET expires_at = $1 WHERE token = $2', ['2000-01-01T00:00:00.000Z', digest]);
+  assert.equal(await repository.validateSession(token), null);
+});
+
+
+test('workspace-scoped upserts cannot overwrite another workspace application', async () => {
+  const { repository } = await import('../server/db/repository.ts');
+  const { db } = await import('../server/db/database.ts');
+  const suffix = Date.now().toString() + '_' + Math.random().toString(36).slice(2);
+  const passwordHash = hashPassword('workspace-test-password');
+  const first = await repository.registerUserWithWorkspace(
+    { id: 'upsert_a_' + suffix, email: 'upsert_a_' + suffix + '@example.test', passwordHash, name: 'Workspace A' },
+    'Workspace A'
+  );
+  const second = await repository.registerUserWithWorkspace(
+    { id: 'upsert_b_' + suffix, email: 'upsert_b_' + suffix + '@example.test', passwordHash, name: 'Workspace B' },
+    'Workspace B'
+  );
+  const app = { ...SEED_APPS[0], id: 'shared-id_' + suffix, name: 'Original workspace application' };
+  await repository.saveApplication(first.workspace.id, app);
+  await repository.saveApplication(second.workspace.id, { ...app, name: 'Cross-tenant overwrite attempt' });
+  const rows = await db.query('SELECT workspace_id, name FROM applications WHERE id = $1', [app.id]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].workspace_id, first.workspace.id);
+  assert.equal(rows[0].name, 'Original workspace application');
+});

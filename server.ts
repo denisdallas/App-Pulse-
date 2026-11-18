@@ -1,8 +1,10 @@
 import express from 'express';
+import { randomBytes, createHmac } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { isAdminRole, isValidRegistrationInput, isWorkspaceRequestAllowed, verifyPassword } from './server/auth/security.ts';
 import { db } from './server/db/database.ts';
 import { runMigrations, hashPassword } from './server/db/migrations.ts';
 import { repository } from './server/db/repository.ts';
@@ -13,6 +15,7 @@ import { Application, Contact, Opportunity, CollectionJob, Campaign, ReportRecor
 import { generateResearchPdf, generateResearchXlsx, escapeSpreadsheetValue } from './server/reports/generator.ts';
 import { getEmailProviderConfig, sendOutreachEmail } from './server/outreach/delivery.ts';
 import { filterSuppressedRecipients } from './src/lib/suppression.ts';
+import { SEED_APPS, getSeedReviews, SEED_THEMES, getSeedOpportunities, SEED_FORECASTS } from './server/seedData.ts';
 
 dotenv.config();
 
@@ -21,9 +24,50 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+// Production traffic is expected to arrive through one trusted hosting proxy (for example, Vercel).
+// This ensures req.ip reflects the client address used by the shared authentication rate limiter.
+app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : false);
+
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (process.env.NODE_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  if (req.path.startsWith('/api')) res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Public read-only product demo. This route uses isolated illustrative fixtures only:
+// it never reads from or writes to a visitor's or customer's workspace.
+app.get('/api/demo', (_req, res) => {
+  const apps = SEED_APPS.map((item) => ({ ...item, tags: [...item.tags], isDemo: true, provenance: 'seed' as const }));
+  const reviews = getSeedReviews().map((item) => ({ ...item, isDemo: true, provenance: 'seed' as const }));
+  const themes = SEED_THEMES.map((item) => ({ ...item, isDemo: true }));
+  const opportunities = getSeedOpportunities().map((item) => ({ ...item, isDemo: true }));
+  const forecasts = SEED_FORECASTS.map((item) => ({ ...item }));
+  res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+  res.json({
+    mode: 'demo',
+    notice: 'Illustrative sample records only. These are not live marketplace results or verified current metrics.',
+    stats: {
+      totalApps: apps.length,
+      totalReviews: reviews.length,
+      negativeReviews: reviews.filter((item) => item.starRating <= 2).length,
+      totalThemes: themes.length,
+      totalOpportunities: opportunities.length,
+    },
+    apps,
+    reviews: reviews.slice(0, 30),
+    themes,
+    opportunities,
+    forecasts,
+  });
+});
 
 // Ensure reports directory exists
 const reportsDir = path.join(__dirname, 'server', 'data', 'reports');
@@ -37,37 +81,86 @@ interface AuthenticatedRequest extends express.Request {
   workspaceId: string;
 }
 
-app.use(async (req: any, res, next) => {
-  const authHeader = req.headers.authorization;
-  const sessionToken = req.headers['x-session-token'] || (authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null);
-  const workspaceHeader = req.headers['x-workspace-id'];
+const AUTH_RATE_WINDOW_MS = 15 * 60 * 1000;
+const AUTH_RATE_LIMIT = 10;
+const authRateLimitSecret = process.env.AUTH_RATE_LIMIT_SECRET || process.env.DATABASE_URL || '';
 
-  let wsId = 'ws_default';
-  let user = null;
-
-  if (sessionToken && typeof sessionToken === 'string') {
-    const session = await repository.validateSession(sessionToken);
-    if (session) {
-      user = session.user;
-      wsId = workspaceHeader ? String(workspaceHeader) : session.workspaceId;
+app.use('/api/auth', async (req, res, next) => {
+  try {
+    if (!authRateLimitSecret) {
+      console.error('[Auth] AUTH_RATE_LIMIT_SECRET or DATABASE_URL must be configured for authentication throttling.');
+      return res.status(503).json({ error: 'Authentication is temporarily unavailable. Please try again shortly.' });
     }
+    const clientAddress = req.ip || req.socket.remoteAddress || 'unknown';
+    // Store only a keyed digest, never the raw client IP address.
+    const keyHash = createHmac('sha256', authRateLimitSecret).update(clientAddress).digest('hex');
+    const now = Date.now();
+    const bucket = await db.incrementAuthRateLimit(keyHash, now, now + AUTH_RATE_WINDOW_MS);
+    res.setHeader('RateLimit-Limit', String(AUTH_RATE_LIMIT));
+    res.setHeader('RateLimit-Remaining', String(Math.max(0, AUTH_RATE_LIMIT - bucket.count)));
+    res.setHeader('RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
+    if (bucket.count > AUTH_RATE_LIMIT) {
+      return res.status(429).json({ error: 'Too many authentication attempts. Try again later.' });
+    }
+    next();
+  } catch (error) {
+    console.error('[Auth] Shared rate limiter unavailable:', error);
+    // Fail closed: do not expose authentication endpoints without the abuse control.
+    return res.status(503).json({ error: 'Authentication is temporarily unavailable. Please try again shortly.' });
   }
+});
 
-  // Development / default fallback session
-  if (!user) {
-    user = {
-      id: 'usr_admin_01',
-      email: 'admin@apppulse.io',
-      name: 'Denis Dallas (Lead)',
-      role: 'admin',
-      createdAt: new Date().toISOString(),
-    };
-    wsId = workspaceHeader ? String(workspaceHeader) : 'ws_default';
+function readSessionToken(req: express.Request): string | null {
+  const authHeader = req.headers.authorization;
+  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) return authHeader.slice(7);
+  const cookieHeader = req.headers.cookie || '';
+  const cookie = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith('app_session='));
+  if (!cookie) return null;
+  try {
+    return decodeURIComponent(cookie.slice('app_session='.length));
+  } catch {
+    return null;
   }
+}
 
-  req.user = user;
-  req.workspaceId = wsId;
-  next();
+function setSessionCookie(res: express.Response, token: string) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `app_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800${secure}`);
+}
+
+function clearSessionCookie(res: express.Response) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `app_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`);
+}
+
+app.use(async (req: any, res, next) => {
+  if (!req.path.startsWith('/api')) return next();
+  if (req.path === '/api/auth/register' || req.path === '/api/auth/login') return next();
+
+  try {
+    const token = readSessionToken(req);
+    if (!token) return res.status(401).json({ error: 'Authentication required' });
+    const session = await repository.validateSession(token);
+    if (!session) {
+      clearSessionCookie(res);
+      return res.status(401).json({ error: 'Session is invalid or expired. Please sign in again.' });
+    }
+
+    const requestedWorkspace = req.headers['x-workspace-id'];
+    if (!isWorkspaceRequestAllowed(session.workspaceId, requestedWorkspace ? String(requestedWorkspace) : undefined)) {
+      return res.status(403).json({ error: 'Workspace access denied' });
+    }
+
+    req.user = session.user;
+    req.workspaceId = session.workspaceId;
+    if (req.path.startsWith('/api/admin') && !isAdminRole(session.user.role)) {
+      return res.status(403).json({ error: 'Administrator access required' });
+    }
+    next();
+  } catch (error) {
+    console.error('[Auth] Session validation failed:', error);
+    res.status(500).json({ error: 'Unable to validate session' });
+  }
 });
 
 // Request logging
@@ -82,58 +175,71 @@ app.use((req: any, res, next) => {
 
 app.post('/api/auth/register', async (req: any, res) => {
   try {
-    const { email, password, name } = req.body;
-    if (!email || !password || !name) {
-      return res.status(400).json({ error: 'Email, password, and name are required' });
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!isValidRegistrationInput(email, password, name)) {
+      return res.status(400).json({ error: 'Provide a valid email, a name, and a password of at least 12 characters.' });
+    }
+    if (await repository.getUserByEmail(email)) {
+      return res.status(409).json({ error: 'An account with this email already exists.' });
     }
 
-    const existing = await repository.getUserByEmail(email);
-    if (existing) {
-      return res.status(400).json({ error: 'User with this email already exists' });
-    }
-
-    const userId = `usr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const passwordHash = hashPassword(password);
-    const user = await repository.createUser({ id: userId, email, passwordHash, name, role: 'member' });
-    const token = await repository.createSession(userId, req.workspaceId);
-
-    res.json({ user, token, workspaceId: req.workspaceId });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    const userId = `usr_${randomBytes(16).toString('hex')}`;
+    const { user, workspace } = await repository.registerUserWithWorkspace(
+      { id: userId, email, passwordHash: hashPassword(password), name },
+      `${name}'s Workspace`
+    );
+    const token = await repository.createSession(userId, workspace.id);
+    setSessionCookie(res, token);
+    return res.status(201).json({ user, workspaceId: workspace.id });
+  } catch (error: any) {
+    console.error('[Auth] Registration failed:', error);
+    return res.status(500).json({ error: 'Registration could not be completed.' });
   }
 });
 
 app.post('/api/auth/login', async (req: any, res) => {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password required' });
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!email || !password || password.length > 256) {
+      return res.status(400).json({ error: 'Email and password are required.' });
     }
 
     const userRecord = await repository.getUserByEmail(email);
-    if (!userRecord) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+    if (!userRecord) return res.status(401).json({ error: 'Invalid email or password.' });
+
+    const verification = verifyPassword(password, userRecord.password_hash);
+    if (!verification.valid) return res.status(401).json({ error: 'Invalid email or password.' });
+    if (verification.needsRehash) {
+      await repository.updateUserPasswordHash(userRecord.id, hashPassword(password));
     }
 
-    const inputHash = hashPassword(password);
-    if (userRecord.password_hash !== inputHash) {
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
+    const workspace = await repository.getFirstWorkspaceForUser(userRecord.id);
+    if (!workspace) return res.status(403).json({ error: 'This account is not assigned to a workspace. Contact an administrator.' });
 
-    const token = await repository.createSession(userRecord.id, req.workspaceId);
-    res.json({
-      token,
-      user: {
-        id: userRecord.id,
-        email: userRecord.email,
-        name: userRecord.name,
-        role: userRecord.role,
-        createdAt: userRecord.created_at,
-      },
-      workspaceId: req.workspaceId,
+    const token = await repository.createSession(userRecord.id, workspace.id);
+    setSessionCookie(res, token);
+    return res.json({
+      user: { id: userRecord.id, email: userRecord.email, name: userRecord.name, role: userRecord.role, createdAt: userRecord.created_at },
+      workspaceId: workspace.id,
     });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (error: any) {
+    console.error('[Auth] Login failed:', error);
+    return res.status(500).json({ error: 'Sign-in could not be completed.' });
+  }
+});
+
+app.post('/api/auth/logout', async (req: any, res) => {
+  try {
+    const token = readSessionToken(req);
+    if (token) await repository.deleteSession(token);
+    clearSessionCookie(res);
+    return res.status(204).end();
+  } catch {
+    clearSessionCookie(res);
+    return res.status(204).end();
   }
 });
 
@@ -146,10 +252,11 @@ app.get('/api/auth/me', (req: any, res) => {
 
 app.get('/api/workspaces', async (req: any, res) => {
   try {
-    const workspaces = await repository.getWorkspaces();
+    const workspaces = await repository.getWorkspacesForUser(req.user.id);
     res.json({ workspaces, activeWorkspaceId: req.workspaceId });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -161,7 +268,8 @@ app.get('/api/stats', async (req: any, res) => {
     const stats = await repository.getStats(req.workspaceId);
     res.json(stats);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -218,7 +326,8 @@ app.get('/api/apps', async (req: any, res) => {
 
     res.json(apps);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -229,7 +338,8 @@ app.get('/api/apps/:id', async (req: any, res) => {
     const reviews = await repository.getReviews(req.workspaceId, { appId: req.params.id });
     res.json({ app: appItem, reviews: reviews.slice(0, 100), totalReviews: reviews.length });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -253,7 +363,8 @@ app.post('/api/apps/search-online', async (req: any, res) => {
 
     res.json({ apps: liveApps, count: liveApps.length });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -263,7 +374,8 @@ app.get('/api/jobs', async (req: any, res) => {
     const jobs = await repository.getJobs(req.workspaceId);
     res.json(jobs);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -351,7 +463,8 @@ app.post('/api/apps/collect', async (req: any, res) => {
 
     res.json({ job, message: 'Durable collection job initiated' });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -360,7 +473,8 @@ app.post('/api/jobs/:id/cancel', async (req: any, res) => {
     const success = await repository.cancelJob(req.workspaceId, req.params.id);
     res.json({ success, message: success ? 'Job cancelled' : 'Job could not be cancelled' });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -409,7 +523,8 @@ app.get('/api/reviews', async (req: any, res) => {
 
     res.json({ reviews: paged, total });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -419,7 +534,8 @@ app.get('/api/themes', async (req: any, res) => {
     const themes = await repository.getComplaintThemes(req.workspaceId);
     res.json(themes);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -452,7 +568,8 @@ app.post('/api/analyze', async (req: any, res) => {
 
     res.json({ themes, count: themes.length });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -494,7 +611,8 @@ app.get('/api/compare', async (req: any, res) => {
 
     res.json({ comparison: comparisonData });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -504,7 +622,8 @@ app.get('/api/opportunities', async (req: any, res) => {
     const opps = await repository.getOpportunities(req.workspaceId);
     res.json(opps);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -521,7 +640,8 @@ app.post('/api/opportunities/generate', async (req: any, res) => {
 
     res.json({ opportunities: opps, count: opps.length });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -532,7 +652,8 @@ app.post('/api/opportunities', async (req: any, res) => {
     const saved = await repository.saveOpportunity(req.workspaceId, opp);
     res.json(saved);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -542,7 +663,8 @@ app.get('/api/contacts', async (req: any, res) => {
     const contacts = await repository.getContacts(req.workspaceId);
     res.json(contacts);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -553,7 +675,8 @@ app.post('/api/contacts', async (req: any, res) => {
     const saved = await repository.saveContact(req.workspaceId, contact);
     res.json(saved);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -595,7 +718,8 @@ app.post('/api/contacts/import-csv', async (req: any, res) => {
 
     res.json({ imported: addedContacts.length, contacts: addedContacts });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -605,7 +729,8 @@ app.get('/api/suppression', async (req: any, res) => {
     const list = await repository.getSuppressionList(req.workspaceId);
     res.json(list);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -616,7 +741,8 @@ app.post('/api/suppression', async (req: any, res) => {
     const record = await repository.addSuppression(req.workspaceId, emailOrDomain, reason);
     res.json(record);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -626,7 +752,8 @@ app.get('/api/campaigns', async (req: any, res) => {
     const campaigns = await repository.getCampaigns(req.workspaceId);
     res.json(campaigns);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -636,7 +763,8 @@ app.post('/api/campaigns', async (req: any, res) => {
     const saved = await repository.saveCampaign(req.workspaceId, camp);
     res.json(saved);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -713,7 +841,8 @@ app.post('/api/campaigns/:id/send', async (req: any, res) => {
       provider: emailConfig.provider,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -723,7 +852,8 @@ app.get('/api/projects', async (req: any, res) => {
     const projects = await repository.getProjects(req.workspaceId);
     res.json(projects);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -733,7 +863,8 @@ app.get('/api/reports', async (req: any, res) => {
     const reports = await repository.getReports(req.workspaceId);
     res.json(reports);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -804,7 +935,8 @@ app.post('/api/reports/generate', async (req: any, res) => {
     await repository.saveReport(req.workspaceId, record);
     res.json({ report: record });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -825,7 +957,8 @@ app.get('/api/reports/:id/download', async (req: any, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${report.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.${ext}"`);
     res.sendFile(report.filePath);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -853,7 +986,8 @@ app.get('/api/settings', async (req: any, res) => {
       suppressionCount: suppressionList.length,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -928,7 +1062,8 @@ app.get('/api/export', async (req: any, res) => {
 
     res.status(400).json({ error: 'Invalid export type. Use reviews, opportunities, or contacts.' });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[API] Request failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
