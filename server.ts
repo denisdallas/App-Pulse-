@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { isValidRegistrationInput, isWorkspaceRequestAllowed, verifyPassword } from './server/auth/security.ts';
+import { isAdminRole, isValidRegistrationInput, isWorkspaceRequestAllowed, verifyPassword } from './server/auth/security.ts';
 import { db } from './server/db/database.ts';
 import { runMigrations, hashPassword } from './server/db/migrations.ts';
 import { repository } from './server/db/repository.ts';
@@ -100,6 +100,9 @@ app.use(async (req: any, res, next) => {
 
     req.user = session.user;
     req.workspaceId = session.workspaceId;
+    if (req.path.startsWith('/api/admin') && !isAdminRole(session.user.role)) {
+      return res.status(403).json({ error: 'Administrator access required' });
+    }
     next();
   } catch (error) {
     console.error('[Auth] Session validation failed:', error);
