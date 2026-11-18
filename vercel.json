@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/api/:apppulsePath*",
+      "destination": "/api/handler?__apppulse_path=:apppulsePath*"
+    }
+  ]
+}
