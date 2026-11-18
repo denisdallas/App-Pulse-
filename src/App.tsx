@@ -26,10 +26,12 @@ import { OutreachStudioView } from './components/OutreachStudioView.tsx';
 import { ProjectsView } from './components/ProjectsView.tsx';
 import { SettingsView } from './components/SettingsView.tsx';
 import { AuthScreen } from './components/AuthScreen.tsx';
+import { DemoScreen } from './components/DemoScreen.tsx';
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
+  const [showAuth, setShowAuth] = useState(false);
   const [currentTab, setCurrentTab] = useState<ViewTab>('dashboard');
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [apps, setApps] = useState<Application[]>([]);
@@ -432,8 +434,12 @@ export default function App() {
     return <div className="min-h-screen bg-slate-950 text-slate-300 flex items-center justify-center text-sm">Checking secure session…</div>;
   }
 
+  if (!isAuthenticated && !showAuth) {
+    return <DemoScreen onCreateAccount={() => setShowAuth(true)} onSignIn={() => setShowAuth(true)} />;
+  }
+
   if (!isAuthenticated) {
-    return <AuthScreen onAuthenticated={() => setIsAuthenticated(true)} />;
+    return <AuthScreen onAuthenticated={() => { setIsAuthenticated(true); setShowAuth(false); }} onViewDemo={() => setShowAuth(false)} />;
   }
 
   return (
