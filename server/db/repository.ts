@@ -274,32 +274,39 @@ export class AppPulseRepository {
   }
 
   async createSession(userId: string, workspaceId: string): Promise<string> {
-    const token = `sess_${crypto.randomBytes(24).toString('hex')}`;
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 days
-    const now = new Date().toISOString();
+    const membership = await db.query(
+      'SELECT role FROM workspace_members WHERE user_id = $1 AND workspace_id = $2',
+      [userId, workspaceId]
+    );
+    if (!membership.length) throw new Error('User is not a member of the requested workspace');
 
+    const token = createSessionToken();
+    const tokenHash = hashSessionToken(token);
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const now = new Date().toISOString();
     await db.execute(
       'INSERT INTO sessions (token, user_id, workspace_id, expires_at, created_at) VALUES ($1, $2, $3, $4, $5)',
-      [token, userId, workspaceId, expiresAt, now]
+      [tokenHash, userId, workspaceId, expiresAt, now]
     );
     return token;
   }
 
   async validateSession(token: string): Promise<{ user: User; workspaceId: string } | null> {
+    if (typeof token !== 'string' || token.length < 32 || token.length > 256) return null;
+    const tokenHash = hashSessionToken(token);
     const rows = await db.query(
-      `SELECT s.workspace_id, u.id, u.email, u.name, u.role, u.created_at, s.expires_at 
-       FROM sessions s 
-       JOIN users u ON s.user_id = u.id 
+      `SELECT s.workspace_id, u.id, u.email, u.name, wm.role, u.created_at, s.expires_at
+       FROM sessions s
+       JOIN users u ON s.user_id = u.id
+       INNER JOIN workspace_members wm ON wm.user_id = u.id AND wm.workspace_id = s.workspace_id
        WHERE s.token = $1`,
-      [token]
+      [tokenHash]
     );
 
     if (rows.length === 0) return null;
     const r = rows[0];
-
-    // Check expiration
-    if (new Date(r.expires_at).getTime() < Date.now()) {
-      await db.execute('DELETE FROM sessions WHERE token = $1', [token]);
+    if (new Date(r.expires_at).getTime() <= Date.now()) {
+      await db.execute('DELETE FROM sessions WHERE token = $1', [tokenHash]);
       return null;
     }
 
@@ -316,7 +323,8 @@ export class AppPulseRepository {
   }
 
   async deleteSession(token: string): Promise<void> {
-    await db.execute('DELETE FROM sessions WHERE token = $1', [token]);
+    if (typeof token !== 'string' || token.length < 32 || token.length > 256) return;
+    await db.execute('DELETE FROM sessions WHERE token = $1', [hashSessionToken(token)]);
   }
 
   // ---------------- APPLICATIONS ----------------
