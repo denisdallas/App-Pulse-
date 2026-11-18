@@ -1,0 +1,10 @@
+# License overview
+
+Copyright (c) 2026 Denis Dallas
+
+This repository uses separate licenses for software and original portfolio content.
+
+- MIT applies to application source code, tests, build and deployment configuration, and project documentation. See [LICENSE-MIT](LICENSE-MIT).
+- Creative Commons Attribution 4.0 International (CC BY 4.0) applies only to the original illustrative sample records in `server/seedData.ts` and to original portfolio reports or sample data files explicitly checked into this repository. See [LICENSE-CC-BY-4.0](LICENSE-CC-BY-4.0).
+
+Third-party app names, trademarks, artwork, store URLs, and upstream marketplace material remain with their respective owners and are excluded from these licenses. Runtime reports generated from user-provided data are not relicensed by this repository.

@@ -6,3 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Runtime data generated locally or by report exports
+server/data/*.db*
+server/data/reports/

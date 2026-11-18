@@ -1,3 +1,9 @@
+/**
+ * Source code in this file is MIT; original illustrative seed records are CC BY 4.0.
+ * Third-party names, marks, artwork, and marketplace material are excluded.
+ * See LICENSE, LICENSE-MIT, and LICENSE-CC-BY-4.0 for scope.
+ */
+
 import type { Application, Review, ComplaintTheme, Opportunity, Contact, Campaign, SuppressionRecord, ResearchProject } from '../src/types.ts';
 import { generateReviewFingerprint } from '../src/lib/dedup.ts';
 import { calculateOpportunityScore } from '../src/lib/scoring.ts';
