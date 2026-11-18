@@ -37,5 +37,37 @@ jobs:
       - name: Test suite
         run: bun test
 
+      - name: API authentication smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          PORT=4179 NODE_ENV=test bun run dev > /tmp/apppulse-auth-smoke.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          base="http://127.0.0.1:4179"
+          code=""
+          for attempt in $(seq 1 30); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' "$base/api/auth/me" || true)"
+            if [ "$code" = "401" ]; then break; fi
+            sleep 1
+          done
+          test "$code" = "401"
+          code="$(curl -sS -o /dev/null -w '%{http_code}' "$base/api/stats")"
+          test "$code" = "401"
+
+          email="security-smoke-$(date +%s%N)@example.test"
+          payload="$(EMAIL="$email" node -e 'process.stdout.write(JSON.stringify({email:process.env.EMAIL,password:"SmokeTestPassword2026!",name:"Security Smoke"}))')"
+          code="$(curl -sS -c /tmp/apppulse-cookies.txt -H 'Content-Type: application/json' -d "$payload" -o /tmp/apppulse-register.json -w '%{http_code}' "$base/api/auth/register")"
+          test "$code" = "201"
+
+          code="$(curl -sS -b /tmp/apppulse-cookies.txt -o /dev/null -w '%{http_code}' "$base/api/stats")"
+          test "$code" = "200"
+          code="$(curl -sS -b /tmp/apppulse-cookies.txt -H 'x-workspace-id: ws_default' -o /dev/null -w '%{http_code}' "$base/api/stats")"
+          test "$code" = "403"
+          code="$(curl -sS -b /tmp/apppulse-cookies.txt -X POST -o /dev/null -w '%{http_code}' "$base/api/auth/logout")"
+          test "$code" = "204"
+          code="$(curl -sS -b /tmp/apppulse-cookies.txt -o /dev/null -w '%{http_code}' "$base/api/stats")"
+          test "$code" = "401"
+
       - name: Production build
         run: bun run build
