@@ -30,10 +30,12 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (process.env.NODE_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  if (req.path.startsWith('/api')) res.setHeader('Cache-Control', 'no-store');
   next();
 });
 
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Ensure reports directory exists
@@ -53,6 +55,10 @@ app.use('/api/auth', (req, res, next) => {
   const key = req.ip || req.socket.remoteAddress || 'unknown';
   const now = Date.now();
   const current = authRateBuckets.get(key);
+  if (authRateBuckets.size > 10000) {
+    for (const [bucketKey, bucket] of authRateBuckets) if (bucket.resetAt <= now) authRateBuckets.delete(bucketKey);
+  }
+  if (authRateBuckets.size > 12000 && !current) return res.status(429).json({ error: 'Too many authentication attempts. Try again later.' });
   if (!current || current.resetAt <= now) {
     authRateBuckets.set(key, { count: 1, resetAt: now + 15 * 60 * 1000 });
     return next();
