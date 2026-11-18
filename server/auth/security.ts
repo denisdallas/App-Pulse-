@@ -19,7 +19,10 @@ export function hashPassword(password: string): string {
 export function verifyPassword(password: string, encoded: string): { valid: boolean; needsRehash: boolean } {
   if (encoded.startsWith('scrypt$')) {
     const [, n, r, p, salt, expectedHex] = encoded.split('$');
-    if (!n || !r || !p || !salt || !expectedHex || !/^[a-f0-9]+$/i.test(expectedHex)) {
+    if (!n || !r || !p || !salt || !expectedHex || !/^[a-f0-9]{128}$/i.test(expectedHex)
+      || Number(n) < SCRYPT_COST || Number(n) > 32768
+      || Number(r) < SCRYPT_BLOCK_SIZE || Number(r) > 16
+      || Number(p) < SCRYPT_PARALLELIZATION || Number(p) > 2) {
       return { valid: false, needsRehash: false };
     }
     try {
