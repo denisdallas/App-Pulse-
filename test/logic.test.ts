@@ -9,6 +9,7 @@ import { jsonToCsv, parseCsv } from '../src/lib/csv.ts';
 import { compareVersions, isVersionInRange, calculateFutureOpportunityScore } from '../src/lib/forecast.ts';
 import { Review, SuppressionRecord } from '../src/types.ts';
 import { GooglePlayConnector } from '../server/connectors/googleplay.ts';
+import { SEED_APPS } from '../server/seedData.ts';
 
 test('Google Play connector reports unavailable reviews without fabricating records', async () => {
   const connector = new GooglePlayConnector();
@@ -338,4 +339,27 @@ test('repository sessions require membership, store only token digests, and reje
   await assert.rejects(() => repository.createSession(userId, otherWorkspace.id), /not a member/i);
   await db.execute('UPDATE sessions SET expires_at = $1 WHERE token = $2', ['2000-01-01T00:00:00.000Z', digest]);
   assert.equal(await repository.validateSession(token), null);
+});
+
+
+test('workspace-scoped upserts cannot overwrite another workspace application', async () => {
+  const { repository } = await import('../server/db/repository.ts');
+  const { db } = await import('../server/db/database.ts');
+  const suffix = Date.now().toString() + '_' + Math.random().toString(36).slice(2);
+  const passwordHash = hashPassword('workspace-test-password');
+  const first = await repository.registerUserWithWorkspace(
+    { id: 'upsert_a_' + suffix, email: 'upsert_a_' + suffix + '@example.test', passwordHash, name: 'Workspace A' },
+    'Workspace A'
+  );
+  const second = await repository.registerUserWithWorkspace(
+    { id: 'upsert_b_' + suffix, email: 'upsert_b_' + suffix + '@example.test', passwordHash, name: 'Workspace B' },
+    'Workspace B'
+  );
+  const app = { ...SEED_APPS[0], id: 'shared-id_' + suffix, name: 'Original workspace application' };
+  await repository.saveApplication(first.workspace.id, app);
+  await repository.saveApplication(second.workspace.id, { ...app, name: 'Cross-tenant overwrite attempt' });
+  const rows = await db.query('SELECT workspace_id, name FROM applications WHERE id = $1', [app.id]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].workspace_id, first.workspace.id);
+  assert.equal(rows[0].name, 'Original workspace application');
 });
