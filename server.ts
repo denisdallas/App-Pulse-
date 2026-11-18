@@ -23,6 +23,9 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+// Production traffic is expected to arrive through one trusted hosting proxy (for example, Vercel).
+// This ensures req.ip reflects the client address used by the shared authentication rate limiter.
+app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : false);
 
 app.disable('x-powered-by');
 app.use((req, res, next) => {
